@@ -100,8 +100,11 @@ class PodcastScanner {
         )
 
         for (const podcastEpisode of existingPodcastEpisodes) {
+           // 优先使用路径匹配
           let matchedScannedAudioFile = scannedAudioFiles.find((saf) => saf.metadata.path === podcastEpisode.audioFile.metadata.path)
-          if (!matchedScannedAudioFile) {
+
+          // 只有在不忽略元数据时才使用 inode 匹配
+          if (!matchedScannedAudioFile && !scanConfig.IGNORE_FILE_METADATA_CHANGES) {
             matchedScannedAudioFile = scannedAudioFiles.find((saf) => saf.ino === podcastEpisode.audioFile.ino)
           }
 
