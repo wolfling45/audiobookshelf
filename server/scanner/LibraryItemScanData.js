@@ -1,18 +1,181 @@
-// 在 LibraryItemScanData.js 文件开头添加全局配置
 const packageJson = require('../../package.json')
 const { LogLevel } = require('../utils/constants')
 const LibraryItem = require('../models/LibraryItem')
 const globals = require('../utils/globals')
-
-// 添加配置：是否忽略文件元数据变化（适用于网盘挂载）
-// 可以通过环境变量或服务器设置来控制
-const IGNORE_FILE_METADATA_CHANGES = process.env.IGNORE_FILE_METADATA === 'true' || false
+const scanConfig = require('../utils/scanConfig')
 
 class LibraryItemScanData {
-  // ... 保持原有代码不变 ...
+  /**
+   * @typedef LibraryFileModifiedObject
+   * @property {LibraryItem.LibraryFileObject} old
+   * @property {LibraryItem.LibraryFileObject} new
+   */
+
+  constructor(data) {
+    /** @type {string} */
+    this.libraryFolderId = data.libraryFolderId
+    /** @type {string} */
+    this.libraryId = data.libraryId
+    /** @type {string} */
+    this.mediaType = data.mediaType
+    /** @type {string} */
+    this.ino = data.ino
+    /** @type {number} */
+    this.mtimeMs = data.mtimeMs
+    /** @type {number} */
+    this.ctimeMs = data.ctimeMs
+    /** @type {number} */
+    this.birthtimeMs = data.birthtimeMs
+    /** @type {string} */
+    this.path = data.path
+    /** @type {string} */
+    this.relPath = data.relPath
+    /** @type {boolean} */
+    this.isFile = data.isFile
+    /** @type {import('../utils/scandir').LibraryItemFilenameMetadata} */
+    this.mediaMetadata = data.mediaMetadata
+    /** @type {import('../objects/files/LibraryFile')[]} */
+    this.libraryFiles = data.libraryFiles
+
+    // Set after check
+    /** @type {boolean} */
+    this.hasChanges
+    /** @type {boolean} */
+    this.hasPathChange
+    /** @type {LibraryItem.LibraryFileObject[]} */
+    this.libraryFilesRemoved = []
+    /** @type {LibraryItem.LibraryFileObject[]} */
+    this.libraryFilesAdded = []
+    /** @type {LibraryFileModifiedObject[]} */
+    this.libraryFilesModified = []
+  }
 
   /**
-   * 修改这个方法以支持忽略元数据变化
+   * Used to create a library item
+   */
+  get libraryItemObject() {
+    let size = 0
+    this.libraryFiles.forEach((lf) => size += (!isNaN(lf.metadata.size) ? Number(lf.metadata.size) : 0))
+    return {
+      ino: this.ino,
+      path: this.path,
+      relPath: this.relPath,
+      mediaType: this.mediaType,
+      isFile: this.isFile,
+      mtime: this.mtimeMs,
+      ctime: this.ctimeMs,
+      birthtime: this.birthtimeMs,
+      lastScan: Date.now(),
+      lastScanVersion: packageJson.version,
+      libraryFiles: this.libraryFiles,
+      libraryId: this.libraryId,
+      libraryFolderId: this.libraryFolderId,
+      size
+    }
+  }
+
+  /** @type {boolean} */
+  get hasLibraryFileChanges() {
+    return this.libraryFilesRemoved.length + this.libraryFilesModified.length + this.libraryFilesAdded.length
+  }
+
+  /** @type {boolean} */
+  get hasAudioFileChanges() {
+    return (this.audioLibraryFilesRemoved.length + this.audioLibraryFilesAdded.length + this.audioLibraryFilesModified.length) > 0
+  }
+
+  /** @type {LibraryFileModifiedObject[]} */
+  get audioLibraryFilesModified() {
+    return this.libraryFilesModified.filter(lf => globals.SupportedAudioTypes.includes(lf.old.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get audioLibraryFilesRemoved() {
+    return this.libraryFilesRemoved.filter(lf => globals.SupportedAudioTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get audioLibraryFilesAdded() {
+    return this.libraryFilesAdded.filter(lf => globals.SupportedAudioTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get audioLibraryFiles() {
+    return this.libraryFiles.filter(lf => globals.SupportedAudioTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryFileModifiedObject[]} */
+  get imageLibraryFilesModified() {
+    return this.libraryFilesModified.filter(lf => globals.SupportedImageTypes.includes(lf.old.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get imageLibraryFilesRemoved() {
+    return this.libraryFilesRemoved.filter(lf => globals.SupportedImageTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get imageLibraryFilesAdded() {
+    return this.libraryFilesAdded.filter(lf => globals.SupportedImageTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get imageLibraryFiles() {
+    return this.libraryFiles.filter(lf => globals.SupportedImageTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryFileModifiedObject[]} */
+  get ebookLibraryFilesModified() {
+    return this.libraryFilesModified.filter(lf => globals.SupportedEbookTypes.includes(lf.old.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get ebookLibraryFilesRemoved() {
+    return this.libraryFilesRemoved.filter(lf => globals.SupportedEbookTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get ebookLibraryFilesAdded() {
+    return this.libraryFilesAdded.filter(lf => globals.SupportedEbookTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject[]} */
+  get ebookLibraryFiles() {
+    return this.libraryFiles.filter(lf => globals.SupportedEbookTypes.includes(lf.metadata.ext?.slice(1).toLowerCase() || ''))
+  }
+
+  /** @type {LibraryItem.LibraryFileObject} */
+  get descTxtLibraryFile() {
+    return this.libraryFiles.find(lf => lf.metadata.filename === 'desc.txt')
+  }
+
+  /** @type {LibraryItem.LibraryFileObject} */
+  get readerTxtLibraryFile() {
+    return this.libraryFiles.find(lf => lf.metadata.filename === 'reader.txt')
+  }
+
+  /** @type {LibraryItem.LibraryFileObject} */
+  get metadataAbsLibraryFile() {
+    return this.libraryFiles.find(lf => lf.metadata.filename === 'metadata.abs')
+  }
+
+  /** @type {LibraryItem.LibraryFileObject} */
+  get metadataJsonLibraryFile() {
+    return this.libraryFiles.find(lf => lf.metadata.filename === 'metadata.json')
+  }
+
+  /** @type {LibraryItem.LibraryFileObject} */
+  get metadataOpfLibraryFile() {
+    return this.libraryFiles.find(lf => lf.metadata.ext.toLowerCase() === '.opf')
+  }
+
+  /** @type {LibraryItem.LibraryFileObject} */
+  get metadataNfoLibraryFile() {
+    return this.libraryFiles.find(lf => lf.metadata.ext.toLowerCase() === '.nfo')
+  }
+
+  /**
+   * 
    * @param {LibraryItem} existingLibraryItem 
    * @param {import('./LibraryScan')} libraryScan
    * @returns {boolean} true if changes found
@@ -21,13 +184,12 @@ class LibraryItemScanData {
     const keysToCompare = ['libraryFolderId', 'path', 'relPath', 'isFile']
     
     // 只有在不忽略元数据时才比较 ino
-    if (!IGNORE_FILE_METADATA_CHANGES) {
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
       keysToCompare.unshift('ino')
     }
     
     this.hasChanges = false
     this.hasPathChange = false
-    
     for (const key of keysToCompare) {
       if (existingLibraryItem[key] !== this[key]) {
         libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "${key}" changed from "${existingLibraryItem[key]}" to "${this[key]}"`)
@@ -40,9 +202,9 @@ class LibraryItemScanData {
       }
     }
 
-    // 如果启用了忽略元数据变化模式，跳过时间戳检查
-    if (!IGNORE_FILE_METADATA_CHANGES) {
-      // Check mtime, ctime and birthtime
+    // Check mtime, ctime and birthtime
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      // 正常模式：检查时间戳变化
       if (existingLibraryItem.mtime?.valueOf() !== this.mtimeMs) {
         libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "mtime" changed from "${existingLibraryItem.mtime?.valueOf()}" to "${this.mtimeMs}"`)
         existingLibraryItem.mtime = this.mtimeMs
@@ -59,12 +221,12 @@ class LibraryItemScanData {
         this.hasChanges = true
       }
     } else {
-      // 在忽略模式下，静默更新时间戳以保持数据库同步
+      // 忽略模式：静默更新时间戳，不标记为变化
       existingLibraryItem.mtime = this.mtimeMs
       existingLibraryItem.birthtime = this.birthtimeMs
       existingLibraryItem.ctime = this.ctimeMs
     }
-
+    
     if (existingLibraryItem.isMissing) {
       libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" was missing but now found`)
       existingLibraryItem.isMissing = false
@@ -78,16 +240,14 @@ class LibraryItemScanData {
     for (const existingLibraryFile of existingLibraryItem.libraryFiles) {
       // Find matching library file using path first and fallback to using inode value
       let matchingLibraryFile = this.libraryFiles.find(lf => lf.metadata.path === existingLibraryFile.metadata.path)
-      
-      // 只有在不忽略元数据时才使用 inode 作为备用匹配方式
-      if (!matchingLibraryFile && !IGNORE_FILE_METADATA_CHANGES) {
+      if (!matchingLibraryFile && !scanConfig.IGNORE_FILE_METADATA_CHANGES) {
         matchingLibraryFile = this.libraryFiles.find(lf => lf.ino === existingLibraryFile.ino)
         if (matchingLibraryFile) {
           libraryScan.addLog(LogLevel.INFO, `Library file with path "${existingLibraryFile.metadata.path}" not found, but found file with matching inode value "${existingLibraryFile.ino}" at path "${matchingLibraryFile.metadata.path}"`)
         }
       }
 
-      if (!matchingLibraryFile) {
+      if (!matchingLibraryFile) { // Library file removed
         libraryScan.addLog(LogLevel.INFO, `Library file "${existingLibraryFile.metadata.path}" was removed from library item "${existingLibraryItem.relPath}"`)
         this.libraryFilesRemoved.push(existingLibraryFile)
         existingLibraryItem.libraryFiles = existingLibraryItem.libraryFiles.filter(lf => lf !== existingLibraryFile)
@@ -102,12 +262,13 @@ class LibraryItemScanData {
       }
     }
 
-    // 剩余代码保持不变...
+    // Log new library files found
     if (libraryFilesAdded.length) {
       this.hasChanges = true
       for (const libraryFile of libraryFilesAdded) {
         libraryScan.addLog(LogLevel.INFO, `New library file found with path "${libraryFile.metadata.path}" for library item "${existingLibraryItem.relPath}"`)
         if (libraryFile.isEBookFile) {
+          // Set all new ebook files as supplementary
           libraryFile.isSupplementary = true
         }
         existingLibraryItem.libraryFiles.push(libraryFile.toJSON())
@@ -136,51 +297,43 @@ class LibraryItemScanData {
   }
 
   /**
-   * 修改这个方法以支持忽略元数据变化
+   * Update existing library file with scanned in library file data
+   * @param {string} libraryItemPath
+   * @param {LibraryItem.LibraryFileObject} existingLibraryFile 
+   * @param {import('../objects/files/LibraryFile')} scannedLibraryFile 
+   * @param {import('./LibraryScan')} libraryScan
+   * @returns {boolean} false if no changes
    */
   compareUpdateLibraryFile(libraryItemPath, existingLibraryFile, scannedLibraryFile, libraryScan) {
     let hasChanges = false
 
-    // 只有在不忽略元数据时才比较 ino
-    if (!IGNORE_FILE_METADATA_CHANGES && existingLibraryFile.ino !== scannedLibraryFile.ino) {
-      existingLibraryFile.ino = scannedLibraryFile.ino
-      hasChanges = true
-    } else if (IGNORE_FILE_METADATA_CHANGES) {
-      // 静默更新 ino
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      // 正常模式：检查 ino 变化
+      if (existingLibraryFile.ino !== scannedLibraryFile.ino) {
+        existingLibraryFile.ino = scannedLibraryFile.ino
+        hasChanges = true
+      }
+    } else {
+      // 忽略模式：静默更新 ino
       existingLibraryFile.ino = scannedLibraryFile.ino
     }
 
     for (const key in existingLibraryFile.metadata) {
-      // 在忽略模式下，跳过时间戳的比较，但仍然检查路径和文件大小
-      if (IGNORE_FILE_METADATA_CHANGES && (key === 'mtimeMs' || key === 'ctimeMs')) {
-        // 静默更新时间戳
-        existingLibraryFile.metadata[key] = scannedLibraryFile.metadata[key]
-        continue
-      }
-
       if (existingLibraryFile.metadata[key] !== scannedLibraryFile.metadata[key]) {
-        // 文件大小变化或路径变化是真实的变化
-        if (key === 'size' || key === 'path' || key === 'relPath') {
-          if (key !== 'path' && key !== 'relPath') {
-            libraryScan.addLog(LogLevel.DEBUG, `Library file "${existingLibraryFile.metadata.relPath}" for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
-          } else {
-            libraryScan.addLog(LogLevel.DEBUG, `Library file for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
-          }
+        // 在忽略模式下，时间戳变化不算真实变化
+        if (scanConfig.IGNORE_FILE_METADATA_CHANGES && (key === 'mtimeMs' || key === 'ctimeMs')) {
+          // 静默更新时间戳
           existingLibraryFile.metadata[key] = scannedLibraryFile.metadata[key]
-          hasChanges = true
-        } else if (!IGNORE_FILE_METADATA_CHANGES) {
-          // 在非忽略模式下，其他元数据变化也算作变化
-          if (key !== 'path' && key !== 'relPath') {
-            libraryScan.addLog(LogLevel.DEBUG, `Library file "${existingLibraryFile.metadata.relPath}" for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
-          } else {
-            libraryScan.addLog(LogLevel.DEBUG, `Library file for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
-          }
-          existingLibraryFile.metadata[key] = scannedLibraryFile.metadata[key]
-          hasChanges = true
-        } else {
-          // 在忽略模式下，静默更新其他元数据
-          existingLibraryFile.metadata[key] = scannedLibraryFile.metadata[key]
+          continue
         }
+        
+        if (key !== 'path' && key !== 'relPath') {
+          libraryScan.addLog(LogLevel.DEBUG, `Library file "${existingLibraryFile.metadata.relPath}" for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
+        } else {
+          libraryScan.addLog(LogLevel.DEBUG, `Library file for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
+        }
+        existingLibraryFile.metadata[key] = scannedLibraryFile.metadata[key]
+        hasChanges = true
       }
     }
 
@@ -191,7 +344,71 @@ class LibraryItemScanData {
     return hasChanges
   }
 
-  // 其他方法保持不变...
-}
+  /**
+   * Check if existing audio file on Book was removed
+   * @param {import('../models/Book').AudioFileObject} existingAudioFile 
+   * @returns {boolean} true if audio file was removed
+   */
+  checkAudioFileRemoved(existingAudioFile) {
+    if (!this.audioLibraryFilesRemoved.length) return false
+    // First check exact path
+    if (this.audioLibraryFilesRemoved.some(af => af.metadata.path === existingAudioFile.metadata.path)) {
+      return true
+    }
+    // Fallback to check inode value (only if not ignoring metadata)
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      return this.audioLibraryFilesRemoved.some(af => af.ino === existingAudioFile.ino)
+    }
+    return false
+  }
 
+  /**
+   * Check if existing ebook file on Book was removed
+   * @param {import('../models/Book').EBookFileObject} ebookFile 
+   * @returns {boolean} true if ebook file was removed
+   */
+  checkEbookFileRemoved(ebookFile) {
+    if (!this.ebookLibraryFiles.length) return true
+
+    if (this.ebookLibraryFiles.some(lf => lf.metadata.path === ebookFile.metadata.path)) {
+      return false
+    }
+
+    // Only check inode if not ignoring metadata
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      return !this.ebookLibraryFiles.some(lf => lf.ino === ebookFile.ino)
+    }
+    
+    return true
+  }
+
+  /**
+   * Set data parsed from filenames
+   * 
+   * @param {Object} bookMetadata 
+   */
+  setBookMetadataFromFilenames(bookMetadata) {
+    const keysToMap = ['title', 'subtitle', 'publishedYear', 'asin']
+    for (const key in this.mediaMetadata) {
+      if (keysToMap.includes(key) && this.mediaMetadata[key]) {
+        bookMetadata[key] = this.mediaMetadata[key]
+      }
+    }
+
+    if (this.mediaMetadata.authors?.length) {
+      bookMetadata.authors = this.mediaMetadata.authors
+    }
+    if (this.mediaMetadata.narrators?.length) {
+      bookMetadata.narrators = this.mediaMetadata.narrators
+    }
+    if (this.mediaMetadata.seriesName) {
+      bookMetadata.series = [
+        {
+          name: this.mediaMetadata.seriesName,
+          sequence: this.mediaMetadata.seriesSequence || null
+        }
+      ]
+    }
+  }
+}
 module.exports = LibraryItemScanData
