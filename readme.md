@@ -14,7 +14,7 @@
 
 # About
 
-Audiobookshelf is a self-hosted audiobook and podcast server.
+Audiobookshelf is a self-hosted audiobook and podcast server！
 
 ### Features
 
