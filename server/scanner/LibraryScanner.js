@@ -14,7 +14,7 @@ const LibraryItemScanner = require('./LibraryItemScanner')
 const LibraryScan = require('./LibraryScan')
 const LibraryItemScanData = require('./LibraryItemScanData')
 const Task = require('../objects/Task')
-const scanConfig = require('../utils/scanConfig')
+const scanConfig = require('./scanConfig')
 
 class LibraryScanner {
   constructor() {
