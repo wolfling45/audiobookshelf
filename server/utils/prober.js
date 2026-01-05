@@ -125,6 +125,9 @@ class Prober {
     const audioStream = streams.find(s => s.codec_type === 'audio')
     const videoStream = streams.find(s => s.codec_type === 'video')
     
+    // 即使在精简模式，也保留 track/disc 序号信息（用于排序）
+    const minimalTags = this.extractMinimalTags(format.tags || {})
+    
     return {
       format: format.format_name,
       duration: parseFloat(format.duration) || 0,
@@ -141,8 +144,40 @@ class Prober {
         codec: videoStream.codec_name
       } : null,
       chapters: this.transformChapters(data.chapters || []),
-      tags: {} // 空标签，快速模式不读取
+      tags: minimalTags // 只保留排序必需的标签
     }
+  }
+  
+  /**
+   * 提取排序必需的最小标签集（track/disc number）
+   * @param {Object} tags 
+   * @returns {Object}
+   */
+  extractMinimalTags(tags) {
+    const minimalTags = {}
+    
+    // 只提取 track 和 disc 相关标签（用于排序）
+    const orderingTags = ['track', 'disc']
+    
+    for (const [key, value] of Object.entries(tags)) {
+      const lowerKey = key.toLowerCase()
+      if (orderingTags.some(tag => lowerKey.includes(tag))) {
+        // 标准化为 ABS 使用的格式
+        if (lowerKey.includes('track')) {
+          // 解析 track 格式: "3" 或 "3/12"
+          const [trackNum, trackTotal] = String(value).split('/')
+          if (trackNum) minimalTags.trackNumber = parseInt(trackNum) || null
+          if (trackTotal) minimalTags.trackTotal = parseInt(trackTotal) || null
+        } else if (lowerKey.includes('disc')) {
+          // 解析 disc 格式: "1" 或 "1/2"
+          const [discNum, discTotal] = String(value).split('/')
+          if (discNum) minimalTags.discNumber = parseInt(discNum) || null
+          if (discTotal) minimalTags.discTotal = parseInt(discTotal) || null
+        }
+      }
+    }
+    
+    return minimalTags
   }
   
   /**
