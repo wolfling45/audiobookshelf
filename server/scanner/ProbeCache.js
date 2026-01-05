@@ -5,14 +5,14 @@
 
 const crypto = require('crypto')
 const fs = require('fs').promises
-const LRU = require('lru-cache')
+const { LRUCache } = require('lru-cache')  // ✅ 修正：使用命名导入
 const Logger = require('../Logger')
-const scanConfig = require('./scanConfig')
+const scanConfig = require('./scanConfig')  // ✅ 同目录，正确路径
 
 class ProbeCache {
   constructor() {
     // 使用 LRU 缓存，自动淘汰旧数据
-    this.cache = new LRU({
+    this.cache = new LRUCache({  // ✅ 修正：使用 LRUCache 而不是 LRU
       max: scanConfig.PROBE_CACHE_SIZE,
       ttl: scanConfig.PROBE_CACHE_TTL * 1000, // 转为毫秒
       updateAgeOnGet: true,
