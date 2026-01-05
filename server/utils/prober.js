@@ -1,342 +1,297 @@
-const ffprobe = require('../libs/nodeFfprobe')
-const MediaProbeData = require('../scanner/MediaProbeData')
+/**
+ * ffprobe 封装 - 优化版
+ * 支持精简模式和缓存
+ */
 
+const { exec } = require('child_process')
+const { promisify } = require('util')
+const execPromise = promisify(exec)
 const Logger = require('../Logger')
+const scanConfig = require('../scanner/scanConfig')
+const ProbeCache = require('../scanner/ProbeCache')
 
-function tryGrabBitRate(stream, all_streams, total_bit_rate) {
-  if (!isNaN(stream.bit_rate) && stream.bit_rate) {
-    return Number(stream.bit_rate)
+class Prober {
+  constructor() {
+    this.ffprobePath = 'ffprobe' // 或者从配置读取
   }
-  if (!stream.tags) {
-    return null
+  
+  /**
+   * 超时包装器
+   * @param {Promise} promise 
+   * @param {number} timeout 
+   * @returns {Promise}
+   */
+  withTimeout(promise, timeout) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Probe timeout')), timeout)
+      )
+    ])
   }
-
-  // Attempt to get bitrate from bps tags
-  var bps = stream.tags.BPS || stream.tags['BPS-eng'] || stream.tags['BPS_eng']
-  if (bps && !isNaN(bps)) {
-    return Number(bps)
-  }
-
-  var tagDuration = stream.tags.DURATION || stream.tags['DURATION-eng'] || stream.tags['DURATION_eng']
-  var tagBytes = stream.tags.NUMBER_OF_BYTES || stream.tags['NUMBER_OF_BYTES-eng'] || stream.tags['NUMBER_OF_BYTES_eng']
-  if (tagDuration && tagBytes && !isNaN(tagDuration) && !isNaN(tagBytes)) {
-    var bps = Math.floor((Number(tagBytes) * 8) / Number(tagDuration))
-    if (bps && !isNaN(bps)) {
-      return bps
-    }
-  }
-
-  if (total_bit_rate && stream.codec_type === 'video') {
-    var estimated_bit_rate = total_bit_rate
-    all_streams.forEach((stream) => {
-      if (stream.bit_rate && !isNaN(stream.bit_rate)) {
-        estimated_bit_rate -= Number(stream.bit_rate)
-      }
-    })
-    if (!all_streams.find((s) => s.codec_type === 'audio' && s.bit_rate && Number(s.bit_rate) > estimated_bit_rate)) {
-      return estimated_bit_rate
-    } else {
-      return total_bit_rate
-    }
-  } else if (stream.codec_type === 'audio') {
-    return 112000
-  } else {
-    return 0
-  }
-}
-
-function tryGrabFrameRate(stream) {
-  var avgFrameRate = stream.avg_frame_rate || stream.r_frame_rate
-  if (!avgFrameRate) return null
-  var parts = avgFrameRate.split('/')
-  if (parts.length === 2) {
-    avgFrameRate = Number(parts[0]) / Number(parts[1])
-  } else {
-    avgFrameRate = Number(parts[0])
-  }
-  if (!isNaN(avgFrameRate)) return avgFrameRate
-  return null
-}
-
-function tryGrabSampleRate(stream) {
-  var sample_rate = stream.sample_rate
-  if (!isNaN(sample_rate)) return Number(sample_rate)
-  return null
-}
-
-function tryGrabChannelLayout(stream) {
-  var layout = stream.channel_layout
-  if (!layout) return null
-  return String(layout).split('(').shift()
-}
-
-function tryGrabTags(stream, ...tags) {
-  if (!stream.tags) return null
-  for (let i = 0; i < tags.length; i++) {
-    const tagKey = Object.keys(stream.tags).find((t) => t.toLowerCase() === tags[i].toLowerCase())
-    const value = stream.tags[tagKey]
-    if (value && value.trim()) return value.trim()
-  }
-  return null
-}
-
-function parseMediaStreamInfo(stream, all_streams, total_bit_rate) {
-  var info = {
-    index: stream.index,
-    type: stream.codec_type,
-    codec: stream.codec_name || null,
-    codec_long: stream.codec_long_name || null,
-    codec_time_base: stream.codec_time_base || null,
-    time_base: stream.time_base || null,
-    bit_rate: tryGrabBitRate(stream, all_streams, total_bit_rate),
-    language: tryGrabTags(stream, 'language'),
-    title: tryGrabTags(stream, 'title')
-  }
-  if (stream.tags) info.tags = stream.tags
-
-  if (info.type === 'audio' || info.type === 'subtitle') {
-    var disposition = stream.disposition || {}
-    info.is_default = disposition.default === 1 || disposition.default === '1'
-  }
-
-  if (info.type === 'video') {
-    info.profile = stream.profile || null
-    info.is_avc = stream.is_avc !== '0' && stream.is_avc !== 'false'
-    info.pix_fmt = stream.pix_fmt || null
-    info.frame_rate = tryGrabFrameRate(stream)
-    info.width = !isNaN(stream.width) ? Number(stream.width) : null
-    info.height = !isNaN(stream.height) ? Number(stream.height) : null
-    info.color_range = stream.color_range || null
-    info.color_space = stream.color_space || null
-    info.color_transfer = stream.color_transfer || null
-    info.color_primaries = stream.color_primaries || null
-  } else if (stream.codec_type === 'audio') {
-    info.channels = stream.channels || null
-    info.sample_rate = tryGrabSampleRate(stream)
-    info.channel_layout = tryGrabChannelLayout(stream)
-  }
-
-  return info
-}
-
-function isNullOrNaN(val) {
-  return val === null || isNaN(val)
-}
-
-/* Example chapter object
- * {
-      "id": 71,
-      "time_base": "1/1000",
-      "start": 80792671,
-      "start_time": "80792.671000",
-      "end": 81084755,
-      "end_time": "81084.755000",
-      "tags": {
-          "title": "072"
-      }
- * }
- */
-function parseChapters(_chapters) {
-  if (!_chapters) return []
-
-  return _chapters
-    .map((chap) => {
-      let title = chap['TAG:title'] || chap.title || ''
-      if (!title && chap.tags?.title) title = chap.tags.title
-      title = title.trim()
-
-      const timebase = chap.time_base?.includes('/') ? Number(chap.time_base.split('/')[1]) : 1
-      const start = !isNullOrNaN(chap.start_time) ? Number(chap.start_time) : !isNullOrNaN(chap.start) ? Number(chap.start) / timebase : 0
-      const end = !isNullOrNaN(chap.end_time) ? Number(chap.end_time) : !isNullOrNaN(chap.end) ? Number(chap.end) / timebase : 0
-      return {
-        start,
-        end,
-        title
-      }
-    })
-    .sort((a, b) => a.start - b.start)
-    .map((chap, index) => {
-      chap.id = index
-      return chap
-    })
-}
-
-function parseTags(format, verbose) {
-  if (!format.tags) {
-    return {}
-  }
-  if (verbose) {
-    Logger.debug('Tags', format.tags)
-  }
-
-  const tags = {
-    file_tag_encoder: tryGrabTags(format, 'encoder', 'tsse', 'tss'),
-    file_tag_encodedby: tryGrabTags(format, 'encoded_by', 'tenc', 'ten'),
-    file_tag_title: tryGrabTags(format, 'title', 'tit2', 'tt2'),
-    file_tag_titlesort: tryGrabTags(format, 'title-sort', 'tsot'),
-    file_tag_subtitle: tryGrabTags(format, 'subtitle', 'tit3', 'tt3'),
-    file_tag_track: tryGrabTags(format, 'track', 'trck', 'trk'),
-    file_tag_disc: tryGrabTags(format, 'discnumber', 'disc', 'disk', 'tpos', 'tpa'),
-    file_tag_album: tryGrabTags(format, 'album', 'talb', 'tal'),
-    file_tag_albumsort: tryGrabTags(format, 'album-sort', 'tsoa'),
-    file_tag_artist: tryGrabTags(format, 'artist', 'tpe1', 'tp1'),
-    file_tag_artistsort: tryGrabTags(format, 'artist-sort', 'tsop'),
-    file_tag_albumartist: tryGrabTags(format, 'albumartist', 'album_artist', 'tpe2'),
-    file_tag_date: tryGrabTags(format, 'date', 'tyer', 'tye'),
-    file_tag_composer: tryGrabTags(format, 'composer', 'tcom', 'tcm'),
-    file_tag_publisher: tryGrabTags(format, 'publisher', 'tpub', 'tpb'),
-    file_tag_comment: tryGrabTags(format, 'comment', 'comm', 'com'),
-    file_tag_description: tryGrabTags(format, 'description', 'desc'),
-    file_tag_genre: tryGrabTags(format, 'genre', 'tcon', 'tco'),
-    file_tag_series: tryGrabTags(format, 'series', 'show', 'mvnm'),
-    file_tag_seriespart: tryGrabTags(format, 'series-part', 'episode_id', 'mvin', 'part'),
-    file_tag_grouping: tryGrabTags(format, 'grouping', 'grp1'),
-    file_tag_isbn: tryGrabTags(format, 'isbn'), // custom
-    file_tag_language: tryGrabTags(format, 'language', 'lang'),
-    file_tag_asin: tryGrabTags(format, 'asin', 'audible_asin'), // custom
-    file_tag_itunesid: tryGrabTags(format, 'itunes-id'), // custom
-    file_tag_podcasttype: tryGrabTags(format, 'podcast-type'), // custom
-    file_tag_episodetype: tryGrabTags(format, 'episode-type'), // custom
-    file_tag_originalyear: tryGrabTags(format, 'originalyear'),
-    file_tag_releasecountry: tryGrabTags(format, 'MusicBrainz Album Release Country', 'releasecountry'),
-    file_tag_releasestatus: tryGrabTags(format, 'MusicBrainz Album Status', 'releasestatus', 'musicbrainz_albumstatus'),
-    file_tag_releasetype: tryGrabTags(format, 'MusicBrainz Album Type', 'releasetype', 'musicbrainz_albumtype'),
-    file_tag_isrc: tryGrabTags(format, 'tsrc', 'isrc'),
-    file_tag_musicbrainz_trackid: tryGrabTags(format, 'MusicBrainz Release Track Id', 'musicbrainz_releasetrackid'),
-    file_tag_musicbrainz_albumid: tryGrabTags(format, 'MusicBrainz Album Id', 'musicbrainz_albumid'),
-    file_tag_musicbrainz_albumartistid: tryGrabTags(format, 'MusicBrainz Album Artist Id', 'musicbrainz_albumartistid'),
-    file_tag_musicbrainz_artistid: tryGrabTags(format, 'MusicBrainz Artist Id', 'musicbrainz_artistid'),
-
-    // Not sure if these are actually used yet or not
-    file_tag_creation_time: tryGrabTags(format, 'creation_time'),
-    file_tag_wwwaudiofile: tryGrabTags(format, 'wwwaudiofile', 'woaf', 'waf'),
-    file_tag_contentgroup: tryGrabTags(format, 'contentgroup', 'tit1', 'tt1'),
-    file_tag_releasetime: tryGrabTags(format, 'releasetime', 'tdrl'),
-    file_tag_movementname: tryGrabTags(format, 'movementname', 'mvnm'),
-    file_tag_movement: tryGrabTags(format, 'movement', 'mvin'),
-    file_tag_genre1: tryGrabTags(format, 'tmp_genre1', 'genre1'),
-    file_tag_genre2: tryGrabTags(format, 'tmp_genre2', 'genre2'),
-    file_tag_overdrive_media_marker: tryGrabTags(format, 'OverDrive MediaMarkers')
-  }
-  for (const key in tags) {
-    if (!tags[key]) {
-      delete tags[key]
-    }
-  }
-
-  return tags
-}
-
-function getDefaultAudioStream(audioStreams) {
-  if (!audioStreams || !audioStreams.length) return null
-  if (audioStreams.length === 1) return audioStreams[0]
-  var defaultStream = audioStreams.find((a) => a.is_default)
-  if (!defaultStream) return audioStreams[0]
-  return defaultStream
-}
-
-function parseProbeData(data, verbose = false) {
-  try {
-    const { format, streams, chapters } = data
-
-    const sizeBytes = !isNaN(format.size) ? Number(format.size) : null
-    const sizeMb = sizeBytes !== null ? Number((sizeBytes / (1024 * 1024)).toFixed(2)) : null
-
-    let cleanedData = {
-      format: format.format_long_name || format.name || 'Unknown',
-      duration: !isNaN(format.duration) ? Number(format.duration) : null,
-      size: sizeBytes,
-      sizeMb,
-      bit_rate: !isNaN(format.bit_rate) ? Number(format.bit_rate) : null,
-      tags: parseTags(format, verbose)
-    }
-    if (verbose && format.tags) {
-      cleanedData.rawTags = format.tags
-    }
-
-    const cleaned_streams = streams.map((s) => parseMediaStreamInfo(s, streams, cleanedData.bit_rate))
-    cleanedData.video_stream = cleaned_streams.find((s) => s.type === 'video')
-    const audioStreams = cleaned_streams.filter((s) => s.type === 'audio')
-    cleanedData.audio_stream = getDefaultAudioStream(audioStreams)
-
-    if (cleanedData.audio_stream && cleanedData.video_stream) {
-      const videoBitrate = cleanedData.video_stream.bit_rate
-      // If audio stream bitrate larger then video, most likely incorrect
-      if (cleanedData.audio_stream.bit_rate > videoBitrate) {
-        cleanedData.video_stream.bit_rate = cleanedData.bit_rate
-      }
-    }
-
-    // If format does not have tags, check audio stream (https://github.com/advplyr/audiobookshelf/issues/256)
-    if (!format.tags && cleanedData.audio_stream && cleanedData.audio_stream.tags) {
-      cleanedData = {
-        ...cleanedData,
-        tags: parseTags(cleanedData.audio_stream, verbose)
-      }
-    }
-
-    cleanedData.chapters = parseChapters(chapters)
-
-    return cleanedData
-  } catch (error) {
-    console.error('Parse failed', error)
-    return null
-  }
-}
-
-/**
- * Run ffprobe on audio filepath
- * @param {string} filepath
- * @param {boolean} [verbose=false]
- * @returns {import('../scanner/MediaProbeData')|{error:string}}
- */
-function probe(filepath, verbose = false) {
-  if (process.env.FFPROBE_PATH) {
-    ffprobe.FFPROBE_PATH = process.env.FFPROBE_PATH
-  }
-
-  return ffprobe(filepath)
-    .then((raw) => {
-      if (raw.error) {
-        return {
-          error: raw.error.string
+  
+  /**
+   * 重试包装器
+   * @param {Function} fn 
+   * @param {number} times 
+   * @returns {Promise}
+   */
+  async withRetry(fn, times = 3) {
+    let lastError
+    for (let i = 0; i < times; i++) {
+      try {
+        return await fn()
+      } catch (error) {
+        lastError = error
+        if (i < times - 1) {
+          Logger.debug(`[Prober] Retry ${i + 1}/${times - 1} after error: ${error.message}`)
+          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))) // 递增延迟
         }
       }
-
-      const rawProbeData = parseProbeData(raw, verbose)
-      if (!rawProbeData || (!rawProbeData.audio_stream && !rawProbeData.video_stream)) {
-        return {
-          error: rawProbeData ? 'Invalid media file: no audio or video streams found' : 'Probe Failed'
-        }
-      } else {
-        const probeData = new MediaProbeData()
-        probeData.setData(rawProbeData)
-        return probeData
-      }
-    })
-    .catch((err) => {
-      return {
-        error: err
-      }
-    })
-}
-module.exports.probe = probe
-
-/**
- * Ffprobe for audio file path
- *
- * @param {string} filepath
- * @returns {Object} ffprobe json output
- */
-function rawProbe(filepath) {
-  if (process.env.FFPROBE_PATH) {
-    ffprobe.FFPROBE_PATH = process.env.FFPROBE_PATH
+    }
+    throw lastError
   }
-
-  return ffprobe(filepath).catch((err) => {
+  
+  /**
+   * 精简模式：只获取音频流信息和章节
+   * @param {string} filepath 
+   * @returns {Promise<Object>}
+   */
+  async probeMinimal(filepath) {
+    const cmd = [
+      this.ffprobePath,
+      '-v', 'quiet',
+      '-print_format', 'json',
+      // 只获取必要的格式信息
+      '-show_entries', 'format=duration,size,bit_rate',
+      // 只获取必要的流信息
+      '-show_entries', 'stream=codec_name,codec_type,sample_rate,channels,bit_rate,time_base',
+      // 获取章节信息
+      '-show_chapters',
+      `"${filepath}"`
+    ].join(' ')
+    
+    try {
+      const { stdout } = await execPromise(cmd, {
+        maxBuffer: 1024 * 1024 // 1MB buffer
+      })
+      
+      const data = JSON.parse(stdout)
+      
+      // 转换为标准格式
+      return this.transformMinimalData(data)
+    } catch (error) {
+      throw new Error(`ffprobe minimal failed: ${error.message}`)
+    }
+  }
+  
+  /**
+   * 完整模式：获取所有信息（包括元数据标签）
+   * @param {string} filepath 
+   * @returns {Promise<Object>}
+   */
+  async probeFull(filepath) {
+    const cmd = [
+      this.ffprobePath,
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      '-show_chapters',
+      `"${filepath}"`
+    ].join(' ')
+    
+    try {
+      const { stdout } = await execPromise(cmd, {
+        maxBuffer: 2 * 1024 * 1024 // 2MB buffer
+      })
+      
+      const data = JSON.parse(stdout)
+      
+      return this.transformFullData(data)
+    } catch (error) {
+      throw new Error(`ffprobe full failed: ${error.message}`)
+    }
+  }
+  
+  /**
+   * 转换精简数据格式
+   * @param {Object} data 
+   * @returns {Object}
+   */
+  transformMinimalData(data) {
+    const format = data.format || {}
+    const streams = data.streams || []
+    const audioStream = streams.find(s => s.codec_type === 'audio')
+    const videoStream = streams.find(s => s.codec_type === 'video')
+    
     return {
-      error: err
+      format: format.format_name,
+      duration: parseFloat(format.duration) || 0,
+      size: parseInt(format.size) || 0,
+      bit_rate: parseInt(format.bit_rate) || (audioStream ? parseInt(audioStream.bit_rate) : 0),
+      audio_stream: audioStream ? {
+        codec: audioStream.codec_name,
+        sample_rate: parseInt(audioStream.sample_rate) || 0,
+        channels: parseInt(audioStream.channels) || 0,
+        bit_rate: parseInt(audioStream.bit_rate) || 0,
+        time_base: audioStream.time_base
+      } : null,
+      video_stream: videoStream ? {
+        codec: videoStream.codec_name
+      } : null,
+      chapters: this.transformChapters(data.chapters || []),
+      tags: {} // 空标签，快速模式不读取
     }
-  })
+  }
+  
+  /**
+   * 转换完整数据格式
+   * @param {Object} data 
+   * @returns {Object}
+   */
+  transformFullData(data) {
+    const format = data.format || {}
+    const streams = data.streams || []
+    const audioStream = streams.find(s => s.codec_type === 'audio')
+    const videoStream = streams.find(s => s.codec_type === 'video')
+    
+    return {
+      format: format.format_name,
+      duration: parseFloat(format.duration) || 0,
+      size: parseInt(format.size) || 0,
+      bit_rate: parseInt(format.bit_rate) || (audioStream ? parseInt(audioStream.bit_rate) : 0),
+      audio_stream: audioStream ? {
+        codec: audioStream.codec_name,
+        sample_rate: parseInt(audioStream.sample_rate) || 0,
+        channels: parseInt(audioStream.channels) || 0,
+        channel_layout: audioStream.channel_layout,
+        bit_rate: parseInt(audioStream.bit_rate) || 0,
+        time_base: audioStream.time_base,
+        language: audioStream.tags?.language
+      } : null,
+      video_stream: videoStream ? {
+        codec: videoStream.codec_name
+      } : null,
+      chapters: this.transformChapters(data.chapters || []),
+      tags: this.transformTags(format.tags || {})
+    }
+  }
+  
+  /**
+   * 转换章节格式
+   * @param {Array} chapters 
+   * @returns {Array}
+   */
+  transformChapters(chapters) {
+    return chapters.map((ch, index) => ({
+      id: index,
+      start: parseFloat(ch.start_time) || 0,
+      end: parseFloat(ch.end_time) || 0,
+      title: ch.tags?.title || `Chapter ${index + 1}`
+    }))
+  }
+  
+  /**
+   * 转换标签格式
+   * @param {Object} tags 
+   * @returns {Object}
+   */
+  transformTags(tags) {
+    const normalized = {}
+    
+    // 标准化标签名称
+    const tagMapping = {
+      'title': 'tagTitle',
+      'album': 'tagAlbum',
+      'artist': 'tagArtist',
+      'album_artist': 'tagAlbumArtist',
+      'composer': 'tagComposer',
+      'genre': 'tagGenre',
+      'date': 'tagDate',
+      'comment': 'tagComment',
+      'description': 'tagDescription',
+      'subtitle': 'tagSubtitle',
+      'publisher': 'tagPublisher',
+      'track': 'tagTrack',
+      'disc': 'tagDisc',
+      'series': 'tagSeries',
+      'series-part': 'tagSeriesPart'
+    }
+    
+    for (const [key, value] of Object.entries(tags)) {
+      const normalizedKey = tagMapping[key.toLowerCase()] || key
+      normalized[normalizedKey] = value
+    }
+    
+    return normalized
+  }
+  
+  /**
+   * 主探测方法（带缓存和优化）
+   * @param {string} filepath 
+   * @returns {Promise<Object>}
+   */
+  async probe(filepath) {
+    // 尝试从缓存读取
+    const cached = await ProbeCache.get(filepath)
+    if (cached) {
+      return cached
+    }
+    
+    // 决定使用精简还是完整模式
+    const probeFunc = scanConfig.shouldUseMinimalProbe() 
+      ? () => this.probeMinimal(filepath)
+      : () => this.probeFull(filepath)
+    
+    // 带超时和重试的探测
+    const probeWithProtection = () => this.withTimeout(
+      this.withRetry(probeFunc, scanConfig.PROBE_RETRY_TIMES),
+      scanConfig.PROBE_TIMEOUT
+    )
+    
+    try {
+      const result = await probeWithProtection()
+      
+      // 转换为标准 MediaProbeData 格式
+      const probeData = {
+        embeddedCoverArt: result.video_stream?.codec || null,
+        format: result.format,
+        duration: result.duration,
+        size: result.size,
+        audioStream: result.audio_stream,
+        videoStream: result.video_stream,
+        bitRate: result.bit_rate,
+        codec: result.audio_stream?.codec,
+        timeBase: result.audio_stream?.time_base,
+        language: result.audio_stream?.language,
+        channelLayout: result.audio_stream?.channel_layout,
+        channels: result.audio_stream?.channels,
+        sampleRate: result.audio_stream?.sample_rate,
+        chapters: result.chapters,
+        audioMetaTags: result.tags
+      }
+      
+      // 存入缓存
+      await ProbeCache.set(filepath, probeData)
+      
+      return probeData
+    } catch (error) {
+      Logger.error(`[Prober] Failed to probe "${filepath}":`, error.message)
+      return {
+        error: error.message
+      }
+    }
+  }
+  
+  /**
+   * 原始 probe（不经过优化，用于特殊需求）
+   * @param {string} filepath 
+   * @returns {Promise<Object>}
+   */
+  async rawProbe(filepath) {
+    return this.probeFull(filepath)
+  }
 }
-module.exports.rawProbe = rawProbe
+
+module.exports = new Prober()
