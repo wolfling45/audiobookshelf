@@ -11,7 +11,7 @@ const LibraryFile = require('../objects/files/LibraryFile')
 const fsExtra = require('../libs/fsExtra')
 const PodcastEpisode = require('../models/PodcastEpisode')
 const AbsMetadataFileScanner = require('./AbsMetadataFileScanner')
-const scanConfig = require('../utils/scanConfig')
+const scanConfig = require('./scanConfig')
 
 /**
  * Metadata for podcasts pulled from files
