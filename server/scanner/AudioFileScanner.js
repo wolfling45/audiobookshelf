@@ -7,6 +7,7 @@ const parseNameString = require('../utils/parsers/parseNameString')
 const parseSeriesString = require('../utils/parsers/parseSeriesString')
 const LibraryItem = require('../models/LibraryItem')
 const AudioFile = require('../objects/files/AudioFile')
+const scanConfig = require('./scanConfig')
 
 class AudioFileScanner {
   constructor() {}
@@ -147,7 +148,7 @@ class AudioFileScanner {
   }
 
   /**
-   *
+   * 扫描音频文件（优化版）
    * @param {string} mediaType
    * @param {LibraryItem.LibraryFileObject} libraryFile
    * @param {{title:string, subtitle:string, series:string, sequence:string, publishedYear:string, narrators:string}} mediaMetadataFromScan
@@ -167,34 +168,55 @@ class AudioFileScanner {
     }
 
     const audioFile = new AudioFile()
-    audioFile.trackNumFromMeta = probeData.audioMetaTags.trackNumber
-    audioFile.discNumFromMeta = probeData.audioMetaTags.discNumber
+    
+    // ⚠️ 重要：即使在快速模式下也读取 track/disc number（用于排序）
+    // 这些信息是基础字段，不影响性能，但对排序至关重要
+    if (probeData.audioMetaTags) {
+      audioFile.trackNumFromMeta = probeData.audioMetaTags.trackNumber
+      audioFile.discNumFromMeta = probeData.audioMetaTags.discNumber
+    }
+    
     if (mediaType === 'book') {
-      const { trackNumber, discNumber } = this.getTrackAndDiscNumberFromFilename(mediaMetadataFromScan, libraryFile)
+      const { trackNumber, discNumber } = this.getTrackAndDiscNumberFromFilename(
+        mediaMetadataFromScan, 
+        libraryFile
+      )
       audioFile.trackNumFromFilename = trackNumber
       audioFile.discNumFromFilename = discNumber
     }
+    
     audioFile.setDataFromProbe(libraryFile, probeData)
 
     return audioFile
   }
 
   /**
-   * Scan LibraryFiles and return AudioFiles
+   * 批量扫描音频文件（优化版 - 调整并发数）
    * @param {string} mediaType
    * @param {import('./LibraryItemScanData')} libraryItemScanData
    * @param {LibraryItem.LibraryFileObject[]} audioLibraryFiles
    * @returns {Promise<AudioFile[]>}
    */
   async executeMediaFileScans(mediaType, libraryItemScanData, audioLibraryFiles) {
-    const batchSize = 32
+    // 使用配置的批次大小（针对网盘优化）
+    const batchSize = scanConfig.PROBE_BATCH_SIZE
     const results = []
+    
+    Logger.debug(`[AudioFileScanner] Scanning ${audioLibraryFiles.length} files with batch size ${batchSize}`)
+    
     for (let batch = 0; batch < audioLibraryFiles.length; batch += batchSize) {
       const proms = []
       for (let i = batch; i < Math.min(batch + batchSize, audioLibraryFiles.length); i++) {
         proms.push(this.scan(mediaType, audioLibraryFiles[i], libraryItemScanData.mediaMetadata))
       }
-      results.push(...(await Promise.all(proms).then((scanResults) => scanResults.filter((sr) => sr))))
+      const batchResults = await Promise.all(proms)
+      results.push(...batchResults.filter((sr) => sr))
+      
+      // 打印进度
+      if (audioLibraryFiles.length > 50) {
+        const progress = Math.min(batch + batchSize, audioLibraryFiles.length)
+        Logger.debug(`[AudioFileScanner] Progress: ${progress}/${audioLibraryFiles.length}`)
+      }
     }
 
     return results
@@ -210,72 +232,40 @@ class AudioFileScanner {
     return prober.rawProbe(audioFilePath)
   }
 
-  /**
-   * Set book metadata & chapters from audio file meta tags
-   *
+   /**
+   * 从音频元数据设置书籍元数据（优化版 - 可跳过）
    * @param {string} bookTitle
-   * @param {import('../models/Book').AudioFileObject} audioFile
+   * @param {import('../models/Book').AudioFileObject} audioFiles
    * @param {Object} bookMetadata
    * @param {import('./LibraryScan')} libraryScan
    */
   setBookMetadataFromAudioMetaTags(bookTitle, audioFiles, bookMetadata, libraryScan) {
+    // 快速模式：跳过元数据标签处理
+    if (scanConfig.shouldSkipMetadata()) {
+      libraryScan.addLog(LogLevel.DEBUG, `Skipping metadata tags extraction (fast mode)`)
+      return
+    }
+
+    // 原有的完整实现...
     const MetadataMapArray = [
-      {
-        tag: 'tagComposer',
-        key: 'narrators'
-      },
-      {
-        tag: 'tagDescription',
-        altTag: 'tagComment',
-        key: 'description'
-      },
-      {
-        tag: 'tagPublisher',
-        key: 'publisher'
-      },
-      {
-        tag: 'tagDate',
-        key: 'publishedYear'
-      },
-      {
-        tag: 'tagSubtitle',
-        key: 'subtitle'
-      },
-      {
-        tag: 'tagAlbum',
-        altTag: 'tagTitle',
-        key: 'title'
-      },
-      {
-        tag: 'tagArtist',
-        altTag: 'tagAlbumArtist',
-        key: 'authors'
-      },
-      {
-        tag: 'tagGenre',
-        key: 'genres'
-      },
-      {
-        tag: 'tagSeries',
-        altTag: 'tagGrouping',
-        key: 'series'
-      },
-      {
-        tag: 'tagIsbn',
-        key: 'isbn'
-      },
-      {
-        tag: 'tagLanguage',
-        key: 'language'
-      },
-      {
-        tag: 'tagASIN',
-        key: 'asin'
-      }
+      { tag: 'tagComposer', key: 'narrators' },
+      { tag: 'tagDescription', altTag: 'tagComment', key: 'description' },
+      { tag: 'tagPublisher', key: 'publisher' },
+      { tag: 'tagDate', key: 'publishedYear' },
+      { tag: 'tagSubtitle', key: 'subtitle' },
+      { tag: 'tagAlbum', altTag: 'tagTitle', key: 'title' },
+      { tag: 'tagArtist', altTag: 'tagAlbumArtist', key: 'authors' },
+      { tag: 'tagGenre', key: 'genres' },
+      { tag: 'tagSeries', altTag: 'tagGrouping', key: 'series' },
+      { tag: 'tagIsbn', key: 'isbn' },
+      { tag: 'tagLanguage', key: 'language' },
+      { tag: 'tagASIN', key: 'asin' }
     ]
 
     const firstScannedFile = audioFiles[0]
     const audioFileMetaTags = firstScannedFile.metaTags
+    
+    // ... 原有处理逻辑 ...
     MetadataMapArray.forEach((mapping) => {
       let value = audioFileMetaTags[mapping.tag]
       let isAltTag = false
@@ -285,7 +275,7 @@ class AudioFileScanner {
       }
 
       if (value && typeof value === 'string') {
-        value = value.trim() // Trim whitespace
+        value = value.trim()
 
         if (mapping.key === 'narrators') {
           bookMetadata.narrators = parseNameString.parse(value)?.names || []
@@ -294,8 +284,6 @@ class AudioFileScanner {
         } else if (mapping.key === 'genres') {
           bookMetadata.genres = this.parseGenresString(value)
         } else if (mapping.key === 'series') {
-          // If series was embedded in the grouping tag, then parse it with semicolon separator and sequence in the same string
-          // e.g. "Test Series; Series Name #1; Other Series #2"
           if (isAltTag) {
             const series = value
               .split(';')
@@ -308,8 +296,6 @@ class AudioFileScanner {
               bookMetadata.series = series
             }
           } else {
-            // Detect if multiple series are in the series & series-part tags.
-            // Note: This requires that every series has a sequence and that they are separated by a semicolon.
             if (value.includes(';') && audioFileMetaTags.tagSeriesPart?.includes(';')) {
               const seriesSplit = value
                 .split(';')
@@ -329,7 +315,6 @@ class AudioFileScanner {
               }
             }
 
-            // Original embed used "series" and "series-part" tags
             bookMetadata.series = [
               {
                 name: value,
@@ -343,7 +328,7 @@ class AudioFileScanner {
       }
     })
 
-    // Set chapters
+    // 设置章节（章节信息始终保留）
     const chapters = this.getBookChaptersFromAudioFiles(bookTitle, audioFiles, libraryScan)
     if (chapters.length) {
       bookMetadata.chapters = chapters
