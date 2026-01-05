@@ -24,7 +24,7 @@ const LibraryScan = require('./LibraryScan')
 const OpfFileScanner = require('./OpfFileScanner')
 const NfoFileScanner = require('./NfoFileScanner')
 const AbsMetadataFileScanner = require('./AbsMetadataFileScanner')
-const scanConfig = require('../utils/scanConfig')
+const scanConfig = require('./scanConfig')
 
 /**
  * Metadata for books pulled from files
@@ -361,35 +361,55 @@ class BookScanner {
       })
     }
 
-    // If no cover then extract cover from audio file OR from ebook
+    // 如果没有封面，并且不跳过封面提取，则提取封面
     const libraryItemDir = existingLibraryItem.isFile ? null : existingLibraryItem.path
-    if (!media.coverPath) {
-      let extractedCoverPath = await CoverManager.saveEmbeddedCoverArt(media.audioFiles, existingLibraryItem.id, libraryItemDir)
+    if (!media.coverPath && !scanConfig.shouldSkipCover()) {
+      let extractedCoverPath = await CoverManager.saveEmbeddedCoverArt(
+        media.audioFiles, 
+        existingLibraryItem.id, 
+        libraryItemDir
+      )
       if (extractedCoverPath) {
         libraryScan.addLog(LogLevel.DEBUG, `Updating book "${bookMetadata.title}" extracted embedded cover art from audio file to path "${extractedCoverPath}"`)
         media.coverPath = extractedCoverPath
         hasMediaChanges = true
       } else if (ebookFileScanData?.ebookCoverPath) {
-        extractedCoverPath = await CoverManager.saveEbookCoverArt(ebookFileScanData, existingLibraryItem.id, libraryItemDir)
+        extractedCoverPath = await CoverManager.saveEbookCoverArt(
+          ebookFileScanData, 
+          existingLibraryItem.id, 
+          libraryItemDir
+        )
         if (extractedCoverPath) {
           libraryScan.addLog(LogLevel.DEBUG, `Updating book "${bookMetadata.title}" extracted embedded cover art from ebook file to path "${extractedCoverPath}"`)
           media.coverPath = extractedCoverPath
           hasMediaChanges = true
         }
       }
+    } else if (scanConfig.shouldSkipCover()) {
+      libraryScan.addLog(LogLevel.DEBUG, `Skipping cover extraction (fast mode)`)
     }
 
-    // If no cover then search for cover if enabled in server settings
-    if (!media.coverPath && Database.serverSettings.scannerFindCovers) {
+    // 如果没有封面，并且不跳过封面搜索，并且服务器设置允许，则搜索封面
+    if (!media.coverPath && 
+        !scanConfig.shouldSkipCoverSearch() && 
+        Database.serverSettings.scannerFindCovers) {
       const authorName = media.authors
         .map((au) => au.name)
         .filter((au) => au)
         .join(', ')
-      const coverPath = await this.searchForCover(existingLibraryItem.id, libraryItemDir, media.title, authorName, libraryScan)
+      const coverPath = await this.searchForCover(
+        existingLibraryItem.id, 
+        libraryItemDir, 
+        media.title, 
+        authorName, 
+        libraryScan
+      )
       if (coverPath) {
         media.coverPath = coverPath
         hasMediaChanges = true
       }
+    } else if (scanConfig.shouldSkipCoverSearch()) {
+      libraryScan.addLog(LogLevel.DEBUG, `Skipping online cover search (${scanConfig.SCAN_MODE} mode)`)
     }
 
     existingLibraryItem.media = media
@@ -540,23 +560,46 @@ class BookScanner {
     }
 
     const libraryItemDir = libraryItemObj.isFile ? null : libraryItemObj.path
-    if (!bookObject.coverPath) {
-      let extractedCoverPath = await CoverManager.saveEmbeddedCoverArt(scannedAudioFiles, libraryItemObj.id, libraryItemDir)
+    
+    // 如果没有封面且不跳过封面提取
+    if (!bookObject.coverPath && !scanConfig.shouldSkipCover()) {
+      let extractedCoverPath = await CoverManager.saveEmbeddedCoverArt(
+        scannedAudioFiles, 
+        libraryItemObj.id, 
+        libraryItemDir
+      )
       if (extractedCoverPath) {
         libraryScan.addLog(LogLevel.DEBUG, `Extracted embedded cover from audio file at "${extractedCoverPath}" for book "${bookObject.title}"`)
         bookObject.coverPath = extractedCoverPath
       } else if (ebookFileScanData?.ebookCoverPath) {
-        extractedCoverPath = await CoverManager.saveEbookCoverArt(ebookFileScanData, libraryItemObj.id, libraryItemDir)
+        extractedCoverPath = await CoverManager.saveEbookCoverArt(
+          ebookFileScanData, 
+          libraryItemObj.id, 
+          libraryItemDir
+        )
         if (extractedCoverPath) {
           libraryScan.addLog(LogLevel.DEBUG, `Extracted embedded cover from ebook file at "${extractedCoverPath}" for book "${bookObject.title}"`)
           bookObject.coverPath = extractedCoverPath
         }
       }
+    } else if (scanConfig.shouldSkipCover()) {
+      libraryScan.addLog(LogLevel.DEBUG, `Skipping cover extraction for new book (fast mode)`)
     }
 
-    if (!bookObject.coverPath && Database.serverSettings.scannerFindCovers) {
+    // 如果没有封面且不跳过封面搜索且服务器设置允许
+    if (!bookObject.coverPath && 
+        !scanConfig.shouldSkipCoverSearch() && 
+        Database.serverSettings.scannerFindCovers) {
       const authorName = bookMetadata.authors.join(', ')
-      bookObject.coverPath = await this.searchForCover(libraryItemObj.id, libraryItemDir, bookObject.title, authorName, libraryScan)
+      bookObject.coverPath = await this.searchForCover(
+        libraryItemObj.id, 
+        libraryItemDir, 
+        bookObject.title, 
+        authorName, 
+        libraryScan
+      )
+    } else if (scanConfig.shouldSkipCoverSearch()) {
+      libraryScan.addLog(LogLevel.DEBUG, `Skipping online cover search for new book (${scanConfig.SCAN_MODE} mode)`)
     }
 
     libraryItemObj.book = bookObject
@@ -634,6 +677,9 @@ class BookScanner {
     return libraryItem
   }
 
+  /**
+   * 从扫描数据获取书籍元数据（优化版）
+   */
   async getBookMetadataFromScanData(audioFiles, ebookFileScanData, libraryItemData, libraryScan, librarySettings, existingLibraryItemId = null) {
     const bookMetadata = {
       title: libraryItemData.mediaMetadata.title,
@@ -656,10 +702,27 @@ class BookScanner {
       coverPath: undefined
     }
 
-    const bookMetadataSourceHandler = new BookScanner.BookMetadataSourceHandler(bookMetadata, audioFiles, ebookFileScanData, libraryItemData, libraryScan, existingLibraryItemId)
+    const bookMetadataSourceHandler = new BookScanner.BookMetadataSourceHandler(
+      bookMetadata, 
+      audioFiles, 
+      ebookFileScanData, 
+      libraryItemData, 
+      libraryScan, 
+      existingLibraryItemId
+    )
+    
     const metadataPrecedence = librarySettings.metadataPrecedence || Database.libraryModel.defaultMetadataPrecedence
-    libraryScan.addLog(LogLevel.DEBUG, `"${bookMetadata.title}" Getting metadata with precedence [${metadataPrecedence.join(', ')}]`)
+    
     for (const metadataSource of metadataPrecedence) {
+      // 快速模式下跳过某些元数据源
+      if (scanConfig.isFastMode()) {
+        // 跳过 ebook 元数据提取（通常较慢）
+        if (metadataSource === 'audioMetatags' && scanConfig.SKIP_EBOOK_METADATA) {
+          libraryScan.addLog(LogLevel.DEBUG, `Skipping ebook metadata extraction (fast mode)`)
+          continue
+        }
+      }
+      
       if (bookMetadataSourceHandler[metadataSource]) {
         await bookMetadataSourceHandler[metadataSource]()
       } else {
@@ -667,8 +730,11 @@ class BookScanner {
       }
     }
 
+    // 设置封面（如果找到图片文件）
     if (libraryItemData.imageLibraryFiles.length) {
-      const coverMatch = libraryItemData.imageLibraryFiles.find((iFile) => /\/cover\.[^.\/]*$/.test(iFile.metadata.path))
+      const coverMatch = libraryItemData.imageLibraryFiles.find(
+        (iFile) => /\/cover\.[^.\/]*$/.test(iFile.metadata.path)
+      )
       bookMetadata.coverPath = coverMatch?.metadata.path || libraryItemData.imageLibraryFiles[0].metadata.path
     }
 
