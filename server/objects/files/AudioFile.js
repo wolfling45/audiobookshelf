@@ -64,7 +64,7 @@ class AudioFile {
       channelLayout: this.channelLayout,
       chapters: this.chapters,
       embeddedCoverArt: this.embeddedCoverArt,
-      metaTags: this.metaTags?.toJSON() || {},
+      metaTags: this.metaTags?.toJSON ? this.metaTags.toJSON() : (this.metaTags || {}),
       mimeType: this.mimeType
     }
   }
