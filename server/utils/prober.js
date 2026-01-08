@@ -1,224 +1,264 @@
 /**
- * ffprobe 封装 - 优化版
- * 支持精简模式和缓存
+ * server/utils/prober.js - 网盘优化版
+ * 只读取音频文件头部（前 5MB），大幅减少网络传输
  */
 
-const { exec } = require('child_process')
+const fs = require('fs').promises
+const fsSync = require('fs')
+const Path = require('path')
+const os = require('os')
 const { promisify } = require('util')
-const execPromise = promisify(exec)
+const { pipeline } = require('stream')
+const pipelineAsync = promisify(pipeline)
+
 const Logger = require('../Logger')
-const scanConfig = require('../scanner/scanConfig')
+const { secondsToTimestamp } = require('./index')
 const ProbeCache = require('../scanner/ProbeCache')
+const scanConfig = require('../scanner/scanConfig')
 
 class Prober {
   constructor() {
-    this.ffprobePath = 'ffprobe' // 或者从配置读取
+    this.FFProbePath = process.env.FFPROBE_PATH || 'ffprobe'
+    this.TempProbeDir = Path.join(os.tmpdir(), 'abs-probe-cache')
   }
-  
+
   /**
-   * 超时包装器
-   * @param {Promise} promise 
-   * @param {number} timeout 
-   * @returns {Promise}
+   * 确保临时目录存在
    */
-  withTimeout(promise, timeout) {
-    return Promise.race([
-      promise,
-      new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Probe timeout')), timeout)
-      )
-    ])
-  }
-  
-  /**
-   * 重试包装器
-   * @param {Function} fn 
-   * @param {number} times 
-   * @returns {Promise}
-   */
-  async withRetry(fn, times = 3) {
-    let lastError
-    for (let i = 0; i < times; i++) {
-      try {
-        return await fn()
-      } catch (error) {
-        lastError = error
-        if (i < times - 1) {
-          Logger.debug(`[Prober] Retry ${i + 1}/${times - 1} after error: ${error.message}`)
-          await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1))) // 递增延迟
-        }
-      }
+  async ensureTempDir() {
+    try {
+      await fs.mkdir(this.TempProbeDir, { recursive: true })
+    } catch (err) {
+      Logger.error('[Prober] Failed to create temp dir:', err)
     }
-    throw lastError
   }
-  
+
   /**
-   * 精简模式：只获取音频流信息和章节
-   * @param {string} filepath 
-   * @returns {Promise<Object>}
+   * 🚀 核心优化：只读取文件前 N MB
+   * 大多数音频格式的元数据都在文件头部
    */
-  async probeMinimal(filepath) {
-    const cmd = [
-      this.ffprobePath,
-      '-v', 'quiet',
-      '-print_format', 'json',
-      // 只获取必要的格式信息
-      '-show_entries', 'format=duration,size,bit_rate',
-      // 只获取必要的流信息
-      '-show_entries', 'stream=codec_name,codec_type,sample_rate,channels,bit_rate,time_base',
-      // 获取章节信息
-      '-show_chapters',
-      `"${filepath}"`
-    ].join(' ')
+  async readPartialFile(filePath, maxBytes = 5 * 1024 * 1024) {
+    const tempFile = Path.join(
+      this.TempProbeDir, 
+      `${Path.basename(filePath)}_${Date.now()}.tmp`
+    )
     
     try {
-      const { stdout } = await execPromise(cmd, {
-        maxBuffer: 1024 * 1024 // 1MB buffer
+      await this.ensureTempDir()
+      
+      // 检查文件大小
+      const stats = await fs.stat(filePath)
+      const bytesToRead = Math.min(stats.size, maxBytes)
+      
+      Logger.debug(`[Prober] Reading first ${(bytesToRead / 1024 / 1024).toFixed(2)}MB of "${Path.basename(filePath)}"`)
+      
+      // 只读取前面部分
+      const readStream = fsSync.createReadStream(filePath, {
+        start: 0,
+        end: bytesToRead - 1
       })
       
-      const data = JSON.parse(stdout)
+      const writeStream = fsSync.createWriteStream(tempFile)
       
-      // 转换为标准格式
-      return this.transformMinimalData(data)
-    } catch (error) {
-      throw new Error(`ffprobe minimal failed: ${error.message}`)
+      await pipelineAsync(readStream, writeStream)
+      
+      return tempFile
+    } catch (err) {
+      Logger.error(`[Prober] Failed to read partial file "${filePath}":`, err.message)
+      throw err
     }
   }
-  
+
   /**
-   * 完整模式：获取所有信息（包括元数据标签）
-   * @param {string} filepath 
-   * @returns {Promise<Object>}
+   * 清理临时文件
    */
-  async probeFull(filepath) {
-    const cmd = [
-      this.ffprobePath,
+  async cleanupTempFile(tempFile) {
+    try {
+      if (tempFile && tempFile.includes(this.TempProbeDir)) {
+        await fs.unlink(tempFile)
+      }
+    } catch (err) {
+      // 忽略清理错误
+    }
+  }
+
+  /**
+   * 优化的 probe 方法
+   */
+  async probe(filePath) {
+    // 1. 尝试从缓存获取
+    if (scanConfig.shouldUseCache()) {
+      const cached = await ProbeCache.get(filePath)
+      if (cached) {
+        return cached
+      }
+    }
+
+    let tempFile = null
+    let usePartialRead = scanConfig.USE_PARTIAL_READ !== false // 默认启用
+
+    try {
+      let targetFile = filePath
+
+      // 2. 如果启用部分读取，只读取文件头部
+      if (usePartialRead) {
+        try {
+          const maxBytes = scanConfig.PARTIAL_READ_SIZE || 5 * 1024 * 1024 // 默认 5MB
+          tempFile = await this.readPartialFile(filePath, maxBytes)
+          targetFile = tempFile
+          Logger.debug(`[Prober] Using partial read for "${Path.basename(filePath)}"`)
+        } catch (err) {
+          Logger.warn(`[Prober] Partial read failed, falling back to full file: ${err.message}`)
+          targetFile = filePath
+          tempFile = null
+        }
+      }
+
+      // 3. 运行 ffprobe（使用优化参数）
+      const result = await this.runFFProbe(targetFile)
+
+      // 4. 缓存结果
+      if (scanConfig.shouldUseCache() && result) {
+        await ProbeCache.set(filePath, result)
+      }
+
+      return result
+    } catch (err) {
+      Logger.error(`[Prober] Failed to probe "${filePath}":`, err.message)
+      return { error: err.message }
+    } finally {
+      // 清理临时文件
+      if (tempFile) {
+        await this.cleanupTempFile(tempFile)
+      }
+    }
+  }
+
+  /**
+   * 运行 ffprobe（优化参数）
+   */
+  async runFFProbe(filePath) {
+    const { execFile } = require('child_process')
+    const execFilePromise = promisify(execFile)
+
+    // 优化的 ffprobe 参数
+    const args = [
       '-v', 'quiet',
       '-print_format', 'json',
       '-show_format',
       '-show_streams',
       '-show_chapters',
-      `"${filepath}"`
-    ].join(' ')
-    
+      // 🚀 关键优化：限制分析时长和探测大小
+      '-analyzeduration', scanConfig.FFPROBE_ANALYZE_DURATION || '5000000', // 5 秒
+      '-probesize', scanConfig.FFPROBE_PROBE_SIZE || '5000000',             // 5MB
+      filePath
+    ]
+
+    const timeout = scanConfig.PROBE_TIMEOUT || 30000
+
     try {
-      const { stdout } = await execPromise(cmd, {
-        maxBuffer: 2 * 1024 * 1024 // 2MB buffer
+      const { stdout } = await execFilePromise(this.FFProbePath, args, {
+        timeout,
+        maxBuffer: 10 * 1024 * 1024 // 10MB buffer
       })
-      
-      const data = JSON.parse(stdout)
-      
-      return this.transformFullData(data)
-    } catch (error) {
-      throw new Error(`ffprobe full failed: ${error.message}`)
+
+      const rawProbeData = JSON.parse(stdout)
+      return this.parseProbeData(rawProbeData)
+    } catch (err) {
+      throw new Error(`FFProbe failed: ${err.message}`)
     }
   }
-  
+
   /**
-   * 转换精简数据格式
-   * @param {Object} data 
-   * @returns {Object}
+   * 解析 ffprobe 输出
    */
-  transformMinimalData(data) {
-    const format = data.format || {}
-    const streams = data.streams || []
-    const audioStream = streams.find(s => s.codec_type === 'audio')
-    const videoStream = streams.find(s => s.codec_type === 'video')
-    
-    // 即使在精简模式，也保留 track/disc 序号信息（用于排序）
-    const minimalTags = this.extractMinimalTags(format.tags || {})
-    
-    return {
-      format: format.format_name,
-      duration: parseFloat(format.duration) || 0,
-      size: parseInt(format.size) || 0,
-      bit_rate: parseInt(format.bit_rate) || (audioStream ? parseInt(audioStream.bit_rate) : 0),
-      audio_stream: audioStream ? {
+  parseProbeData(rawData) {
+    if (!rawData || !rawData.format) {
+      throw new Error('Invalid ffprobe output')
+    }
+
+    const audioStream = rawData.streams?.find(s => s.codec_type === 'audio')
+    const videoStream = rawData.streams?.find(s => s.codec_type === 'video')
+
+    if (!audioStream) {
+      throw new Error('No audio stream found')
+    }
+
+    // 提取基本信息
+    const probeData = {
+      format: rawData.format.format_name,
+      duration: parseFloat(rawData.format.duration) || 0,
+      size: parseInt(rawData.format.size) || 0,
+      bit_rate: parseInt(rawData.format.bit_rate) || 0,
+      
+      audio_stream: {
         codec: audioStream.codec_name,
-        sample_rate: parseInt(audioStream.sample_rate) || 0,
-        channels: parseInt(audioStream.channels) || 0,
         bit_rate: parseInt(audioStream.bit_rate) || 0,
-        time_base: audioStream.time_base
-      } : null,
-      video_stream: videoStream ? {
-        codec: videoStream.codec_name
-      } : null,
-      chapters: this.transformChapters(data.chapters || []),
-      tags: minimalTags // 只保留排序必需的标签
-    }
-  }
-  
-  /**
-   * 提取排序必需的最小标签集（track/disc number）
-   * @param {Object} tags 
-   * @returns {Object}
-   */
-  extractMinimalTags(tags) {
-    const minimalTags = {}
-    
-    // 只提取 track 和 disc 相关标签（用于排序）
-    const orderingTags = ['track', 'disc']
-    
-    for (const [key, value] of Object.entries(tags)) {
-      const lowerKey = key.toLowerCase()
-      if (orderingTags.some(tag => lowerKey.includes(tag))) {
-        // 标准化为 ABS 使用的格式
-        if (lowerKey.includes('track')) {
-          // 解析 track 格式: "3" 或 "3/12"
-          const [trackNum, trackTotal] = String(value).split('/')
-          if (trackNum) minimalTags.trackNumber = parseInt(trackNum) || null
-          if (trackTotal) minimalTags.trackTotal = parseInt(trackTotal) || null
-        } else if (lowerKey.includes('disc')) {
-          // 解析 disc 格式: "1" 或 "1/2"
-          const [discNum, discTotal] = String(value).split('/')
-          if (discNum) minimalTags.discNumber = parseInt(discNum) || null
-          if (discTotal) minimalTags.discTotal = parseInt(discTotal) || null
-        }
-      }
-    }
-    
-    return minimalTags
-  }
-  
-  /**
-   * 转换完整数据格式
-   * @param {Object} data 
-   * @returns {Object}
-   */
-  transformFullData(data) {
-    const format = data.format || {}
-    const streams = data.streams || []
-    const audioStream = streams.find(s => s.codec_type === 'audio')
-    const videoStream = streams.find(s => s.codec_type === 'video')
-    
-    return {
-      format: format.format_name,
-      duration: parseFloat(format.duration) || 0,
-      size: parseInt(format.size) || 0,
-      bit_rate: parseInt(format.bit_rate) || (audioStream ? parseInt(audioStream.bit_rate) : 0),
-      audio_stream: audioStream ? {
-        codec: audioStream.codec_name,
-        sample_rate: parseInt(audioStream.sample_rate) || 0,
-        channels: parseInt(audioStream.channels) || 0,
+        channels: audioStream.channels,
         channel_layout: audioStream.channel_layout,
-        bit_rate: parseInt(audioStream.bit_rate) || 0,
+        sample_rate: audioStream.sample_rate,
         time_base: audioStream.time_base,
         language: audioStream.tags?.language
-      } : null,
+      },
+
       video_stream: videoStream ? {
         codec: videoStream.codec_name
       } : null,
-      chapters: this.transformChapters(data.chapters || []),
-      tags: this.transformTags(format.tags || {})
+
+      // 🚀 快速模式：跳过元数据标签
+      tags: scanConfig.shouldSkipMetadata() ? {} : this.parseTags(rawData.format.tags),
+      
+      chapters: this.parseChapters(rawData.chapters)
+    }
+
+    return probeData
+  }
+
+  /**
+   * 解析标签（可选）
+   */
+  parseTags(tags) {
+    if (!tags || scanConfig.shouldSkipMetadata()) {
+      return {}
+    }
+
+    // 标准化标签名称
+    const normalized = {}
+    for (const key in tags) {
+      const lowerKey = key.toLowerCase()
+      normalized[lowerKey] = tags[key]
+    }
+
+    return {
+      tagTitle: normalized.title,
+      tagAlbum: normalized.album,
+      tagArtist: normalized.artist,
+      tagAlbumArtist: normalized.album_artist || normalized['album-artist'],
+      tagGenre: normalized.genre,
+      tagDate: normalized.date || normalized.year,
+      tagComposer: normalized.composer,
+      tagComment: normalized.comment,
+      tagDescription: normalized.description,
+      tagPublisher: normalized.publisher,
+      tagSubtitle: normalized.subtitle,
+      tagTrack: normalized.track,
+      tagDisc: normalized.disc,
+      tagLanguage: normalized.language,
+      tagISBN: normalized.isbn,
+      tagASIN: normalized.asin,
+      tagSeries: normalized.series,
+      tagSeriesPart: normalized['series-part'] || normalized.series_part
     }
   }
-  
+
   /**
-   * 转换章节格式
-   * @param {Array} chapters 
-   * @returns {Array}
+   * 解析章节
    */
-  transformChapters(chapters) {
+  parseChapters(chapters) {
+    if (!chapters || !chapters.length) {
+      return []
+    }
+
     return chapters.map((ch, index) => ({
       id: index,
       start: parseFloat(ch.start_time) || 0,
@@ -226,107 +266,34 @@ class Prober {
       title: ch.tags?.title || `Chapter ${index + 1}`
     }))
   }
-  
+
   /**
-   * 转换标签格式
-   * @param {Object} tags 
-   * @returns {Object}
+   * 原始 probe 方法（用于测试）
    */
-  transformTags(tags) {
-    const normalized = {}
-    
-    // 标准化标签名称
-    const tagMapping = {
-      'title': 'tagTitle',
-      'album': 'tagAlbum',
-      'artist': 'tagArtist',
-      'album_artist': 'tagAlbumArtist',
-      'composer': 'tagComposer',
-      'genre': 'tagGenre',
-      'date': 'tagDate',
-      'comment': 'tagComment',
-      'description': 'tagDescription',
-      'subtitle': 'tagSubtitle',
-      'publisher': 'tagPublisher',
-      'track': 'tagTrack',
-      'disc': 'tagDisc',
-      'series': 'tagSeries',
-      'series-part': 'tagSeriesPart'
-    }
-    
-    for (const [key, value] of Object.entries(tags)) {
-      const normalizedKey = tagMapping[key.toLowerCase()] || key
-      normalized[normalizedKey] = value
-    }
-    
-    return normalized
-  }
-  
-  /**
-   * 主探测方法（带缓存和优化）
-   * @param {string} filepath 
-   * @returns {Promise<Object>}
-   */
-  async probe(filepath) {
-    // 尝试从缓存读取
-    const cached = await ProbeCache.get(filepath)
-    if (cached) {
-      return cached
-    }
-    
-    // 决定使用精简还是完整模式
-    const probeFunc = scanConfig.shouldUseMinimalProbe() 
-      ? () => this.probeMinimal(filepath)
-      : () => this.probeFull(filepath)
-    
-    // 带超时和重试的探测
-    const probeWithProtection = () => this.withTimeout(
-      this.withRetry(probeFunc, scanConfig.PROBE_RETRY_TIMES),
-      scanConfig.PROBE_TIMEOUT
-    )
-    
-    try {
-      const result = await probeWithProtection()
-      
-      // 转换为标准 MediaProbeData 格式
-      const probeData = {
-        embeddedCoverArt: result.video_stream?.codec || null,
-        format: result.format,
-        duration: result.duration,
-        size: result.size,
-        audioStream: result.audio_stream,
-        videoStream: result.video_stream,
-        bitRate: result.bit_rate,
-        codec: result.audio_stream?.codec,
-        timeBase: result.audio_stream?.time_base,
-        language: result.audio_stream?.language,
-        channelLayout: result.audio_stream?.channel_layout,
-        channels: result.audio_stream?.channels,
-        sampleRate: result.audio_stream?.sample_rate,
-        chapters: result.chapters,
-        audioMetaTags: result.tags
-      }
-      
-      // 存入缓存
-      await ProbeCache.set(filepath, probeData)
-      
-      return probeData
-    } catch (error) {
-      Logger.error(`[Prober] Failed to probe "${filepath}":`, error.message)
-      return {
-        error: error.message
-      }
-    }
-  }
-  
-  /**
-   * 原始 probe（不经过优化，用于特殊需求）
-   * @param {string} filepath 
-   * @returns {Promise<Object>}
-   */
-  async rawProbe(filepath) {
-    return this.probeFull(filepath)
+  async rawProbe(filePath) {
+    return this.runFFProbe(filePath)
   }
 }
+
+// 定期清理临时文件（每小时）
+setInterval(async () => {
+  try {
+    const tempDir = new Prober().TempProbeDir
+    const files = await fs.readdir(tempDir)
+    const now = Date.now()
+    
+    for (const file of files) {
+      const filePath = Path.join(tempDir, file)
+      const stats = await fs.stat(filePath)
+      
+      // 删除 1 小时前的临时文件
+      if (now - stats.mtimeMs > 60 * 60 * 1000) {
+        await fs.unlink(filePath)
+      }
+    }
+  } catch (err) {
+    // 忽略清理错误
+  }
+}, 60 * 60 * 1000) // 每小时执行一次
 
 module.exports = new Prober()
