@@ -169,13 +169,7 @@ class AudioFileScanner {
 
     const audioFile = new AudioFile()
     
-    // ⚠️ 重要：即使在快速模式下也读取 track/disc number（用于排序）
-    // 这些信息是基础字段，不影响性能，但对排序至关重要
-    if (probeData.audioMetaTags) {
-      audioFile.trackNumFromMeta = probeData.audioMetaTags.trackNumber
-      audioFile.discNumFromMeta = probeData.audioMetaTags.discNumber
-    }
-    
+    // 设置 track/disc number（用于排序）
     if (mediaType === 'book') {
       const { trackNumber, discNumber } = this.getTrackAndDiscNumberFromFilename(
         mediaMetadataFromScan, 
@@ -183,8 +177,15 @@ class AudioFileScanner {
       )
       audioFile.trackNumFromFilename = trackNumber
       audioFile.discNumFromFilename = discNumber
+      
+      // 从元数据标签读取（如果有）
+      if (probeData.audioMetaTags) {
+        audioFile.trackNumFromMeta = probeData.audioMetaTags.trackNumber
+        audioFile.discNumFromMeta = probeData.audioMetaTags.discNumber
+      }
     }
     
+    // 必须先调用 setDataFromProbe，它会创建完整的 audioMetaTags 对象
     audioFile.setDataFromProbe(libraryFile, probeData)
 
     return audioFile
