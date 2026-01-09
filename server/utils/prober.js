@@ -1,6 +1,5 @@
 const ffprobe = require('../libs/nodeFfprobe')
 const MediaProbeData = require('../scanner/MediaProbeData')
-
 const Logger = require('../Logger')
 
 function tryGrabBitRate(stream, all_streams, total_bit_rate) {
@@ -11,7 +10,6 @@ function tryGrabBitRate(stream, all_streams, total_bit_rate) {
     return null
   }
 
-  // Attempt to get bitrate from bps tags
   var bps = stream.tags.BPS || stream.tags['BPS-eng'] || stream.tags['BPS_eng']
   if (bps && !isNaN(bps)) {
     return Number(bps)
@@ -123,21 +121,9 @@ function isNullOrNaN(val) {
   return val === null || isNaN(val)
 }
 
-/* Example chapter object
- * {
-      "id": 71,
-      "time_base": "1/1000",
-      "start": 80792671,
-      "start_time": "80792.671000",
-      "end": 81084755,
-      "end_time": "81084.755000",
-      "tags": {
-          "title": "072"
-      }
- * }
- */
-function parseChapters(_chapters) {
-  if (!_chapters) return []
+function parseChapters(_chapters, skipChapters = false) {
+  // 如果配置跳过章节，直接返回空数组
+  if (skipChapters || !_chapters) return []
 
   return _chapters
     .map((chap) => {
@@ -191,12 +177,12 @@ function parseTags(format, verbose) {
     file_tag_series: tryGrabTags(format, 'series', 'show', 'mvnm'),
     file_tag_seriespart: tryGrabTags(format, 'series-part', 'episode_id', 'mvin', 'part'),
     file_tag_grouping: tryGrabTags(format, 'grouping', 'grp1'),
-    file_tag_isbn: tryGrabTags(format, 'isbn'), // custom
+    file_tag_isbn: tryGrabTags(format, 'isbn'),
     file_tag_language: tryGrabTags(format, 'language', 'lang'),
-    file_tag_asin: tryGrabTags(format, 'asin', 'audible_asin'), // custom
-    file_tag_itunesid: tryGrabTags(format, 'itunes-id'), // custom
-    file_tag_podcasttype: tryGrabTags(format, 'podcast-type'), // custom
-    file_tag_episodetype: tryGrabTags(format, 'episode-type'), // custom
+    file_tag_asin: tryGrabTags(format, 'asin', 'audible_asin'),
+    file_tag_itunesid: tryGrabTags(format, 'itunes-id'),
+    file_tag_podcasttype: tryGrabTags(format, 'podcast-type'),
+    file_tag_episodetype: tryGrabTags(format, 'episode-type'),
     file_tag_originalyear: tryGrabTags(format, 'originalyear'),
     file_tag_releasecountry: tryGrabTags(format, 'MusicBrainz Album Release Country', 'releasecountry'),
     file_tag_releasestatus: tryGrabTags(format, 'MusicBrainz Album Status', 'releasestatus', 'musicbrainz_albumstatus'),
@@ -206,8 +192,6 @@ function parseTags(format, verbose) {
     file_tag_musicbrainz_albumid: tryGrabTags(format, 'MusicBrainz Album Id', 'musicbrainz_albumid'),
     file_tag_musicbrainz_albumartistid: tryGrabTags(format, 'MusicBrainz Album Artist Id', 'musicbrainz_albumartistid'),
     file_tag_musicbrainz_artistid: tryGrabTags(format, 'MusicBrainz Artist Id', 'musicbrainz_artistid'),
-
-    // Not sure if these are actually used yet or not
     file_tag_creation_time: tryGrabTags(format, 'creation_time'),
     file_tag_wwwaudiofile: tryGrabTags(format, 'wwwaudiofile', 'woaf', 'waf'),
     file_tag_contentgroup: tryGrabTags(format, 'contentgroup', 'tit1', 'tt1'),
@@ -218,6 +202,7 @@ function parseTags(format, verbose) {
     file_tag_genre2: tryGrabTags(format, 'tmp_genre2', 'genre2'),
     file_tag_overdrive_media_marker: tryGrabTags(format, 'OverDrive MediaMarkers')
   }
+  
   for (const key in tags) {
     if (!tags[key]) {
       delete tags[key]
@@ -235,9 +220,11 @@ function getDefaultAudioStream(audioStreams) {
   return defaultStream
 }
 
-function parseProbeData(data, verbose = false) {
+function parseProbeData(data, options = {}) {
   try {
     const { format, streams, chapters } = data
+    const verbose = options.verbose || false
+    const skipChapters = options.skipChapters || false
 
     const sizeBytes = !isNaN(format.size) ? Number(format.size) : null
     const sizeMb = sizeBytes !== null ? Number((sizeBytes / (1024 * 1024)).toFixed(2)) : null
@@ -250,6 +237,7 @@ function parseProbeData(data, verbose = false) {
       bit_rate: !isNaN(format.bit_rate) ? Number(format.bit_rate) : null,
       tags: parseTags(format, verbose)
     }
+    
     if (verbose && format.tags) {
       cleanedData.rawTags = format.tags
     }
@@ -261,13 +249,11 @@ function parseProbeData(data, verbose = false) {
 
     if (cleanedData.audio_stream && cleanedData.video_stream) {
       const videoBitrate = cleanedData.video_stream.bit_rate
-      // If audio stream bitrate larger then video, most likely incorrect
       if (cleanedData.audio_stream.bit_rate > videoBitrate) {
         cleanedData.video_stream.bit_rate = cleanedData.bit_rate
       }
     }
 
-    // If format does not have tags, check audio stream (https://github.com/advplyr/audiobookshelf/issues/256)
     if (!format.tags && cleanedData.audio_stream && cleanedData.audio_stream.tags) {
       cleanedData = {
         ...cleanedData,
@@ -275,7 +261,8 @@ function parseProbeData(data, verbose = false) {
       }
     }
 
-    cleanedData.chapters = parseChapters(chapters)
+    // 根据选项决定是否解析章节
+    cleanedData.chapters = parseChapters(chapters, skipChapters)
 
     return cleanedData
   } catch (error) {
@@ -285,17 +272,27 @@ function parseProbeData(data, verbose = false) {
 }
 
 /**
- * Run ffprobe on audio filepath
- * @param {string} filepath
- * @param {boolean} [verbose=false]
- * @returns {import('../scanner/MediaProbeData')|{error:string}}
+ * Run ffprobe on audio filepath with options
+ * @param {string} filepath - 文件路径
+ * @param {Object} [options={}] - 扫描选项
+ * @param {number} [options.analyzeduration] - 分析时长（微秒）
+ * @param {number} [options.probesize] - 探测大小（字节）
+ * @param {boolean} [options.skipChapters=false] - 跳过章节扫描
+ * @param {boolean} [options.verbose=false] - 详细日志
+ * @returns {Promise<import('../scanner/MediaProbeData')|{error:string}>}
  */
-function probe(filepath, verbose = false) {
+function probe(filepath, options = {}) {
   if (process.env.FFPROBE_PATH) {
     ffprobe.FFPROBE_PATH = process.env.FFPROBE_PATH
   }
 
-  return ffprobe(filepath)
+  // 如果传入的是旧格式的 verbose 参数（boolean）
+  if (typeof options === 'boolean') {
+    options = { verbose: options }
+  }
+
+  // 直接传递选项给 ffprobe（现在它支持了）
+  return ffprobe(filepath, options)
     .then((raw) => {
       if (raw.error) {
         return {
@@ -303,7 +300,7 @@ function probe(filepath, verbose = false) {
         }
       }
 
-      const rawProbeData = parseProbeData(raw, verbose)
+      const rawProbeData = parseProbeData(raw, options)
       if (!rawProbeData || (!rawProbeData.audio_stream && !rawProbeData.video_stream)) {
         return {
           error: rawProbeData ? 'Invalid media file: no audio or video streams found' : 'Probe Failed'
@@ -316,7 +313,7 @@ function probe(filepath, verbose = false) {
     })
     .catch((err) => {
       return {
-        error: err
+        error: err.message || err
       }
     })
 }
@@ -324,18 +321,18 @@ module.exports.probe = probe
 
 /**
  * Ffprobe for audio file path
- *
  * @param {string} filepath
- * @returns {Object} ffprobe json output
+ * @param {Object|Array} [options] - Options object or custom args array
+ * @returns {Promise<Object>} ffprobe json output
  */
-function rawProbe(filepath) {
+function rawProbe(filepath, options = null) {
   if (process.env.FFPROBE_PATH) {
     ffprobe.FFPROBE_PATH = process.env.FFPROBE_PATH
   }
 
-  return ffprobe(filepath).catch((err) => {
+  return ffprobe(filepath, options).catch((err) => {
     return {
-      error: err
+      error: err.message || err
     }
   })
 }
