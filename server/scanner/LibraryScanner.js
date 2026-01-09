@@ -14,6 +14,7 @@ const LibraryItemScanner = require('./LibraryItemScanner')
 const LibraryScan = require('./LibraryScan')
 const LibraryItemScanData = require('./LibraryItemScanData')
 const Task = require('../objects/Task')
+const scanConfig = require('../utils/scanConfig')
 
 class LibraryScanner {
   constructor() {
@@ -643,10 +644,14 @@ class LibraryScanner {
 module.exports = new LibraryScanner()
 
 function ItemToFileInoMatch(libraryItem1, libraryItem2) {
+  // 如果忽略元数据，跳过 inode 匹配
+  if (scanConfig.IGNORE_FILE_METADATA_CHANGES) return false
   return libraryItem1.isFile && libraryItem2.libraryFiles.some((lf) => lf.ino === libraryItem1.ino)
 }
 
 function ItemToItemInoMatch(libraryItem1, libraryItem2) {
+  // 如果忽略元数据，跳过 inode 匹配
+  if (scanConfig.IGNORE_FILE_METADATA_CHANGES) return false
   return libraryItem1.ino === libraryItem2.ino
 }
 
@@ -659,6 +664,9 @@ function isSingleMediaFile(fileUpdateGroup, itemDir) {
 }
 
 async function findLibraryItemByItemToItemInoMatch(libraryId, fullPath) {
+  // 如果忽略元数据，跳过 inode 匹配
+  if (scanConfig.IGNORE_FILE_METADATA_CHANGES) return null
+  
   const ino = await fileUtils.getIno(fullPath)
   if (!ino) return null
   const existingLibraryItem = await Database.libraryItemModel.findOneExpanded({
@@ -670,7 +678,9 @@ async function findLibraryItemByItemToItemInoMatch(libraryId, fullPath) {
 }
 
 async function findLibraryItemByItemToFileInoMatch(libraryId, fullPath, isSingleMedia) {
-  if (!isSingleMedia) return null
+  // 如果忽略元数据，跳过 inode 匹配
+  if (!isSingleMedia || scanConfig.IGNORE_FILE_METADATA_CHANGES) return null
+  
   // check if it was moved from another folder by comparing the ino to the library files
   const ino = await fileUtils.getIno(fullPath)
   if (!ino) return null
@@ -692,7 +702,9 @@ async function findLibraryItemByItemToFileInoMatch(libraryId, fullPath, isSingle
 }
 
 async function findLibraryItemByFileToItemInoMatch(libraryId, fullPath, isSingleMedia, itemFiles) {
-  if (isSingleMedia) return null
+  // 如果忽略元数据，跳过 inode 匹配
+  if (isSingleMedia || scanConfig.IGNORE_FILE_METADATA_CHANGES) return null
+  
   // check if it was moved from the root folder by comparing the ino to the ino of the scanned files
   let itemFileInos = []
   for (const itemFile of itemFiles) {
