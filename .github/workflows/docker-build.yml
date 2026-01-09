@@ -1,41 +1,53 @@
----
 name: Build and Push Docker Image
 
 on:
-  # Allows you to run workflow manually from Actions tab
   workflow_dispatch:
     inputs:
       tags:
         description: 'Docker Tag'
         required: true
         default: 'latest'
+      ref:
+        description: 'Git ref to build (branch or tag)'
+        required: false
+        default: ''
+
   push:
-    branches: [main, master]
+    branches:
+      - main
+      - master
+      - wolfling45-patch-2
     tags:
       - 'v*.*.*'
-    # Only build when files in these directories have been changed
-    paths:
-      - client/**
-      - server/**
-      - index.js
-      - package.json
+    # 如果你希望每次 push 都构建，可删除 paths
+    #paths:
+    #  - client/**
+    #  - server/**
+    #  - index.js
+    #  - package.json
 
 jobs:
   build:
-    if: ${{ !contains(github.event.head_commit.message, 'skip ci') && github.repository == 'advplyr/audiobookshelf' }}
+    if: ${{ !contains(github.event.head_commit.message, 'skip ci') }}
     runs-on: ubuntu-24.04
+
+    permissions:
+      contents: read
+      packages: write   # 必须，否则无法 push 到 GHCR
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
 
       - name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: advplyr/audiobookshelf,ghcr.io/${{ github.repository_owner }}/audiobookshelf
+          images: ghcr.io/${{ github.repository_owner }}/audiobookshelf
           tags: |
-            type=edge,branch=master
+            type=ref,event=branch
             type=semver,pattern={{version}}
 
       - name: Setup QEMU
@@ -52,27 +64,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      - name: Login to Dockerhub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PASSWORD }}
-
-      - name: Login to ghcr
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ secrets.GHCR_PASSWORD }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build image
+      - name: Build and push image
         uses: docker/build-push-action@v6
         with:
-          tags: ${{ github.event.inputs.tags || steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          tags: ${{ github.event.inputs.tags || steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
