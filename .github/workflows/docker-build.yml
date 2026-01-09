@@ -16,7 +16,7 @@ on:
     branches:
       - main
       - master
-      - wolfling45-patch-2
+      - wolfling45-patch-3
     tags:
       - 'v*.*.*'
     # 如果你希望每次 push 都构建，可删除 paths
