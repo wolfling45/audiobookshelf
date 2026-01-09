@@ -7,6 +7,7 @@ const parseNameString = require('../utils/parsers/parseNameString')
 const parseSeriesString = require('../utils/parsers/parseSeriesString')
 const LibraryItem = require('../models/LibraryItem')
 const AudioFile = require('../objects/files/AudioFile')
+const scanConfig = require('../utils/scanConfig')
 
 class AudioFileScanner {
   constructor() {}
@@ -154,7 +155,8 @@ class AudioFileScanner {
    * @returns {Promise<AudioFile>}
    */
   async scan(mediaType, libraryFile, mediaMetadataFromScan) {
-    const probeData = await prober.probe(libraryFile.metadata.path)
+    const probeOptions = scanConfig.getProbeOptions()
+    const probeData = await prober.probe(libraryFile.metadata.path, probeOptions)
 
     if (probeData.error) {
       Logger.error(`[AudioFileScanner] ${probeData.error} : "${libraryFile.metadata.path}"`)
