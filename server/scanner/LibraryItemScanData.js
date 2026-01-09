@@ -2,6 +2,7 @@ const packageJson = require('../../package.json')
 const { LogLevel } = require('../utils/constants')
 const LibraryItem = require('../models/LibraryItem')
 const globals = require('../utils/globals')
+const scanConfig = require('../utils/scanConfig')
 
 class LibraryItemScanData {
   /**
@@ -180,7 +181,13 @@ class LibraryItemScanData {
    * @returns {boolean} true if changes found
    */
   async checkLibraryItemData(existingLibraryItem, libraryScan) {
-    const keysToCompare = ['libraryFolderId', 'ino', 'path', 'relPath', 'isFile']
+    const keysToCompare = ['libraryFolderId', 'path', 'relPath', 'isFile']
+    
+    // 只有在不忽略元数据时才比较 ino
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      keysToCompare.unshift('ino')
+    }
+    
     this.hasChanges = false
     this.hasPathChange = false
     for (const key of keysToCompare) {
@@ -196,21 +203,30 @@ class LibraryItemScanData {
     }
 
     // Check mtime, ctime and birthtime
-    if (existingLibraryItem.mtime?.valueOf() !== this.mtimeMs) {
-      libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "mtime" changed from "${existingLibraryItem.mtime?.valueOf()}" to "${this.mtimeMs}"`)
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      // 正常模式：检查时间戳变化
+      if (existingLibraryItem.mtime?.valueOf() !== this.mtimeMs) {
+        libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "mtime" changed from "${existingLibraryItem.mtime?.valueOf()}" to "${this.mtimeMs}"`)
+        existingLibraryItem.mtime = this.mtimeMs
+        this.hasChanges = true
+      }
+      if (existingLibraryItem.birthtime?.valueOf() !== this.birthtimeMs) {
+        libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "birthtime" changed from "${existingLibraryItem.birthtime?.valueOf()}" to "${this.birthtimeMs}"`)
+        existingLibraryItem.birthtime = this.birthtimeMs
+        this.hasChanges = true
+      }
+      if (existingLibraryItem.ctime?.valueOf() !== this.ctimeMs) {
+        libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "ctime" changed from "${existingLibraryItem.ctime?.valueOf()}" to "${this.ctimeMs}"`)
+        existingLibraryItem.ctime = this.ctimeMs
+        this.hasChanges = true
+      }
+    } else {
+      // 忽略模式：静默更新时间戳，不标记为变化
       existingLibraryItem.mtime = this.mtimeMs
-      this.hasChanges = true
-    }
-    if (existingLibraryItem.birthtime?.valueOf() !== this.birthtimeMs) {
-      libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "birthtime" changed from "${existingLibraryItem.birthtime?.valueOf()}" to "${this.birthtimeMs}"`)
       existingLibraryItem.birthtime = this.birthtimeMs
-      this.hasChanges = true
-    }
-    if (existingLibraryItem.ctime?.valueOf() !== this.ctimeMs) {
-      libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" key "ctime" changed from "${existingLibraryItem.ctime?.valueOf()}" to "${this.ctimeMs}"`)
       existingLibraryItem.ctime = this.ctimeMs
-      this.hasChanges = true
     }
+    
     if (existingLibraryItem.isMissing) {
       libraryScan.addLog(LogLevel.DEBUG, `Library item "${existingLibraryItem.relPath}" was missing but now found`)
       existingLibraryItem.isMissing = false
@@ -224,7 +240,7 @@ class LibraryItemScanData {
     for (const existingLibraryFile of existingLibraryItem.libraryFiles) {
       // Find matching library file using path first and fallback to using inode value
       let matchingLibraryFile = this.libraryFiles.find(lf => lf.metadata.path === existingLibraryFile.metadata.path)
-      if (!matchingLibraryFile) {
+      if (!matchingLibraryFile && !scanConfig.IGNORE_FILE_METADATA_CHANGES) {
         matchingLibraryFile = this.libraryFiles.find(lf => lf.ino === existingLibraryFile.ino)
         if (matchingLibraryFile) {
           libraryScan.addLog(LogLevel.INFO, `Library file with path "${existingLibraryFile.metadata.path}" not found, but found file with matching inode value "${existingLibraryFile.ino}" at path "${matchingLibraryFile.metadata.path}"`)
@@ -291,13 +307,26 @@ class LibraryItemScanData {
   compareUpdateLibraryFile(libraryItemPath, existingLibraryFile, scannedLibraryFile, libraryScan) {
     let hasChanges = false
 
-    if (existingLibraryFile.ino !== scannedLibraryFile.ino) {
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      // 正常模式：检查 ino 变化
+      if (existingLibraryFile.ino !== scannedLibraryFile.ino) {
+        existingLibraryFile.ino = scannedLibraryFile.ino
+        hasChanges = true
+      }
+    } else {
+      // 忽略模式：静默更新 ino
       existingLibraryFile.ino = scannedLibraryFile.ino
-      hasChanges = true
     }
 
     for (const key in existingLibraryFile.metadata) {
       if (existingLibraryFile.metadata[key] !== scannedLibraryFile.metadata[key]) {
+        // 在忽略模式下，时间戳变化不算真实变化
+        if (scanConfig.IGNORE_FILE_METADATA_CHANGES && (key === 'mtimeMs' || key === 'ctimeMs')) {
+          // 静默更新时间戳
+          existingLibraryFile.metadata[key] = scannedLibraryFile.metadata[key]
+          continue
+        }
+        
         if (key !== 'path' && key !== 'relPath') {
           libraryScan.addLog(LogLevel.DEBUG, `Library file "${existingLibraryFile.metadata.relPath}" for library item "${libraryItemPath}" key "${key}" changed from "${existingLibraryFile.metadata[key]}" to "${scannedLibraryFile.metadata[key]}"`)
         } else {
@@ -326,8 +355,11 @@ class LibraryItemScanData {
     if (this.audioLibraryFilesRemoved.some(af => af.metadata.path === existingAudioFile.metadata.path)) {
       return true
     }
-    // Fallback to check inode value
-    return this.audioLibraryFilesRemoved.some(af => af.ino === existingAudioFile.ino)
+    // Fallback to check inode value (only if not ignoring metadata)
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      return this.audioLibraryFilesRemoved.some(af => af.ino === existingAudioFile.ino)
+    }
+    return false
   }
 
   /**
@@ -342,7 +374,12 @@ class LibraryItemScanData {
       return false
     }
 
-    return !this.ebookLibraryFiles.some(lf => lf.ino === ebookFile.ino)
+    // Only check inode if not ignoring metadata
+    if (!scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      return !this.ebookLibraryFiles.some(lf => lf.ino === ebookFile.ino)
+    }
+    
+    return true
   }
 
   /**
