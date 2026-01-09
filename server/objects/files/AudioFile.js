@@ -131,7 +131,10 @@ class AudioFile {
     this.channels = probeData.channels
     this.channelLayout = probeData.channelLayout
     this.chapters = probeData.chapters || []
-    this.metaTags = probeData.audioMetaTags
+    // 确保 metaTags 始终是 AudioMetaTags 实例
+    this.metaTags = probeData.audioMetaTags instanceof AudioMetaTags 
+      ? probeData.audioMetaTags 
+      : new AudioMetaTags(probeData.audioMetaTags || {})
     this.embeddedCoverArt = probeData.embeddedCoverArt
   }
 
