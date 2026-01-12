@@ -23,5 +23,6 @@
   },
   "[vue]": {
     "editor.defaultFormatter": "octref.vetur"
-  }
+  },
+  "kiroAgent.agentAutonomy": "Autopilot"
 }

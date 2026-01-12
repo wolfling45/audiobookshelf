@@ -301,15 +301,31 @@ class LibraryScanner {
    * @returns {LibraryItemScanData[]}
    */
   async scanFolder(library, folder) {
-    const folderPath = fileUtils.filePathToPOSIX(folder.path)
+    let folderPath = fileUtils.filePathToPOSIX(folder.path)
+    
+    // 检查是否为 OpenList 路径（通过前缀或 library.provider）
+    let isOpenList = library.isOpenList || fileUtils.isOpenListPath(folderPath)
+    
+    // 标准化路径格式
+    let scanPath = folderPath
+    if (isOpenList) {
+      // 如果已经有 openlist:// 前缀，保持不变
+      if (!fileUtils.isOpenListPath(folderPath)) {
+        // 如果没有前缀但 library 标记为 openlist，添加前缀
+        scanPath = `openlist://${folderPath}`
+      }
+      Logger.info(`[LibraryScanner] Scanning OpenList folder: ${folderPath}`)
+    } else {
+      Logger.info(`[LibraryScanner] Scanning local folder: ${folderPath}`)
+    }
 
-    const pathExists = await fs.pathExists(folderPath)
+    const pathExists = await fileUtils.pathExists(scanPath, isOpenList)
     if (!pathExists) {
       Logger.error(`[scandir] Invalid folder path does not exist "${folderPath}"`)
       return []
     }
 
-    const fileItems = await fileUtils.recurseFiles(folderPath)
+    const fileItems = await fileUtils.recurseFiles(scanPath, null, isOpenList)
     const libraryItemGrouping = scanUtils.groupFileItemsIntoLibraryItemDirs(library.mediaType, fileItems, library.settings.audiobooksOnly)
 
     if (!Object.keys(libraryItemGrouping).length) {
@@ -338,7 +354,12 @@ class LibraryScanner {
         fileObjs = await scanUtils.buildLibraryFile(libraryItemData.path, libraryItemGrouping[libraryItemPath])
       }
 
-      const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path)
+      const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path, isOpenList)
+
+      if (!libraryItemFolderStats) {
+        Logger.warn(`[LibraryScanner] Failed to get stats for library item "${libraryItemData.path}"`)
+        continue
+      }
 
       if (!libraryItemFolderStats.ino) {
         Logger.warn(`[LibraryScanner] Library item folder "${libraryItemData.path}" has no inode value`)

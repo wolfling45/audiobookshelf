@@ -55,6 +55,13 @@ class FolderWatcher extends EventEmitter {
       Logger.warn('[Watcher] Already watching library', library.name)
       return
     }
+    
+    // OpenList 库不支持文件监听
+    if (library.isOpenList) {
+      Logger.info(`[Watcher] Skipping watcher for OpenList library "${library.name}"`)
+      return
+    }
+    
     Logger.info(`[Watcher] Initializing watcher for "${library.name}".`)
 
     const folderPaths = library.libraryFolders.map((f) => f.path)

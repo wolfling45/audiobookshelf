@@ -8,6 +8,8 @@ const parseSeriesString = require('../utils/parsers/parseSeriesString')
 const LibraryItem = require('../models/LibraryItem')
 const AudioFile = require('../objects/files/AudioFile')
 const scanConfig = require('../utils/scanConfig')
+const fileUtils = require('../utils/fileUtils')
+const openlistClient = require('../libs/openlistClient')
 
 class AudioFileScanner {
   constructor() {}
@@ -152,11 +154,30 @@ class AudioFileScanner {
    * @param {string} mediaType
    * @param {LibraryItem.LibraryFileObject} libraryFile
    * @param {{title:string, subtitle:string, series:string, sequence:string, publishedYear:string, narrators:string}} mediaMetadataFromScan
+   * @param {boolean} [isOpenList]
    * @returns {Promise<AudioFile>}
    */
-  async scan(mediaType, libraryFile, mediaMetadataFromScan) {
+  async scan(mediaType, libraryFile, mediaMetadataFromScan, isOpenList = false) {
+    const filePath = libraryFile.metadata.path
+    
+    // 检查是否为 OpenList 文件
+    if (fileUtils.isOpenListPath(filePath)) {
+      isOpenList = true
+    }
+    
+    // 对于 OpenList 文件，需要特殊处理
+    let probePath = filePath
+    if (isOpenList && openlistClient.isEnabled()) {
+      // 获取下载链接用于 probe
+      const downloadUrl = await fileUtils.getFileDownloadUrl(filePath, true)
+      if (downloadUrl && downloadUrl !== filePath) {
+        Logger.debug(`[AudioFileScanner] Using OpenList download URL for probe: ${downloadUrl}`)
+        probePath = downloadUrl
+      }
+    }
+    
     const probeOptions = scanConfig.getProbeOptions()
-    const probeData = await prober.probe(libraryFile.metadata.path, probeOptions)
+    const probeData = await prober.probe(probePath, probeOptions)
 
     if (probeData.error) {
       Logger.error(`[AudioFileScanner] ${probeData.error} : "${libraryFile.metadata.path}"`)

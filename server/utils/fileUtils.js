@@ -6,6 +6,7 @@ const fs = require('../libs/fsExtra')
 const rra = require('../libs/recursiveReaddirAsync')
 const Logger = require('../Logger')
 const { AudioMimeType } = require('./constants')
+const openlistClient = require('../libs/openlistClient')
 
 /**
  * Make sure folder separator is POSIX for Windows file paths. e.g. "C:\Users\Abs" becomes "C:/Users/Abs"
@@ -47,7 +48,32 @@ function getFileStat(path) {
   }
 }
 
-async function getFileTimestampsWithIno(path) {
+async function getFileTimestampsWithIno(path, isOpenList = false) {
+  // 检查是否为 OpenList 路径
+  if (isOpenListPath(path)) {
+    isOpenList = true
+    path = normalizeOpenListPath(path)
+  }
+  
+  if (isOpenList && openlistClient.isEnabled()) {
+    try {
+      const fileInfo = await openlistClient.getFileInfo(path)
+      if (!fileInfo) return false
+      
+      const normalized = openlistClient.normalizeFileInfo(fileInfo)
+      return {
+        size: normalized.size,
+        mtimeMs: normalized.mtimeMs,
+        ctimeMs: normalized.ctimeMs,
+        birthtimeMs: normalized.birthtimeMs,
+        ino: normalized.ino
+      }
+    } catch (error) {
+      Logger.error(`[fileUtils] Failed to get OpenList file timestamps for "${path}":`, error)
+      return false
+    }
+  }
+  
   try {
     var stat = await fs.stat(path, { bigint: true })
     return {
@@ -176,12 +202,129 @@ module.exports.shouldIgnoreFile = (path) => {
  */
 
 /**
- * Get array of files inside dir
+ * Check if path is an OpenList path
+ * @param {string} path
+ * @returns {boolean}
+ */
+function isOpenListPath(path) {
+  if (!path) return false
+  // 支持多种格式：
+  // - openlist:///path
+  // - openlist://path
+  // - openlist:/path
+  return path.startsWith('openlist:')
+}
+module.exports.isOpenListPath = isOpenListPath
+
+/**
+ * Normalize OpenList path (remove openlist:// prefix and ensure proper format)
+ * @param {string} path
+ * @returns {string}
+ */
+function normalizeOpenListPath(path) {
+  if (!path) return path
+  
+  if (isOpenListPath(path)) {
+    // 移除 openlist: 前缀和所有斜杠
+    let normalized = path.replace(/^openlist:\/*/i, '')
+    
+    // 确保以 / 开头
+    if (!normalized.startsWith('/')) {
+      normalized = '/' + normalized
+    }
+    
+    return normalized
+  }
+  
+  return path
+}
+module.exports.normalizeOpenListPath = normalizeOpenListPath
+
+/**
+ * Get array of files inside dir (supports both local and OpenList)
  * @param {string} path
  * @param {string} [relPathToReplace]
- * @returns {FilePathItem[]}
+ * @param {boolean} [isOpenList]
+ * @returns {Promise<FilePathItem[]>}
  */
-module.exports.recurseFiles = async (path, relPathToReplace = null) => {
+module.exports.recurseFiles = async (path, relPathToReplace = null, isOpenList = false) => {
+  // 检查是否为 OpenList 路径
+  if (isOpenListPath(path)) {
+    isOpenList = true
+    path = normalizeOpenListPath(path)
+  }
+  
+  if (isOpenList && openlistClient.isEnabled()) {
+    return await recurseFilesOpenList(path, relPathToReplace)
+  }
+  
+  return await recurseFilesLocal(path, relPathToReplace)
+}
+
+/**
+ * Get array of files from OpenList
+ * @param {string} path
+ * @param {string} [relPathToReplace]
+ * @returns {Promise<FilePathItem[]>}
+ */
+async function recurseFilesOpenList(path, relPathToReplace = null) {
+  Logger.info(`[fileUtils] Recursing OpenList directory: ${path}`)
+  
+  if (!relPathToReplace) {
+    relPathToReplace = path
+  }
+  
+  // 确保路径以 / 结尾
+  if (!relPathToReplace.endsWith('/')) relPathToReplace += '/'
+  
+  const audioExtensions = ['.mp3', '.m4a', '.m4b', '.flac', '.aac', '.ogg', '.opus', '.wav', '.wma', '.mp4']
+  
+  try {
+    const files = await openlistClient.listDirectoryRecursive(path, {
+      filter: (file) => {
+        const ext = Path.extname(file.name).toLowerCase()
+        return audioExtensions.includes(ext)
+      }
+    })
+    
+    Logger.info(`[fileUtils] Found ${files.length} audio files in OpenList directory: ${path}`)
+    
+    // 转换为 FilePathItem 格式
+    return files.map(file => {
+      const normalized = openlistClient.normalizeFileInfo(file, path)
+      const relPath = normalized.path.replace(relPathToReplace, '')
+      const dirname = Path.dirname(relPath)
+      const deep = relPath.split('/').filter(p => p).length - 1
+      
+      return {
+        name: normalized.name,
+        path: relPath,
+        reldirpath: dirname === '.' ? '' : dirname,
+        fullpath: normalized.path,
+        extension: Path.extname(normalized.name),
+        deep: deep,
+        // 保留 OpenList 特有信息
+        size: normalized.size,
+        mtimeMs: normalized.mtimeMs,
+        ctimeMs: normalized.ctimeMs,
+        birthtimeMs: normalized.birthtimeMs,
+        ino: normalized.ino,
+        isOpenList: true
+      }
+    }).sort((a, b) => a.deep - b.deep)
+  } catch (error) {
+    Logger.error(`[fileUtils] Failed to recurse OpenList directory "${path}":`, error)
+    return []
+  }
+}
+
+/**
+ * Get array of files inside local dir
+ * @param {string} path
+ * @param {string} [relPathToReplace]
+ * @returns {Promise<FilePathItem[]>}
+ */
+async function recurseFilesLocal(path, relPathToReplace = null) {
   path = filePathToPOSIX(path)
   if (!path.endsWith('/')) path = path + '/'
 
@@ -576,3 +719,66 @@ async function copyToExisting(srcPath, destPath) {
   })
 }
 module.exports.copyToExisting = copyToExisting
+
+/**
+ * Check if path exists (supports both local and OpenList)
+ * @param {string} path
+ * @param {boolean} [isOpenList]
+ * @returns {Promise<boolean>}
+ */
+module.exports.pathExists = async (path, isOpenList = false) => {
+  if (isOpenListPath(path)) {
+    isOpenList = true
+    path = normalizeOpenListPath(path)
+  }
+  
+  if (isOpenList && openlistClient.isEnabled()) {
+    return await openlistClient.pathExists(path)
+  }
+  
+  return await fs.pathExists(path)
+}
+
+/**
+ * Check if path is a directory (supports both local and OpenList)
+ * @param {string} path
+ * @param {boolean} [isOpenList]
+ * @returns {Promise<boolean>}
+ */
+module.exports.isDirectory = async (path, isOpenList = false) => {
+  if (isOpenListPath(path)) {
+    isOpenList = true
+    path = normalizeOpenListPath(path)
+  }
+  
+  if (isOpenList && openlistClient.isEnabled()) {
+    return await openlistClient.isDirectory(path)
+  }
+  
+  try {
+    const stat = await fs.stat(path)
+    return stat.isDirectory()
+  } catch (error) {
+    return false
+  }
+}
+
+/**
+ * Get download URL for file (for OpenList files, returns direct download link)
+ * @param {string} path
+ * @param {boolean} [isOpenList]
+ * @returns {Promise<string>}
+ */
+module.exports.getFileDownloadUrl = async (path, isOpenList = false) => {
+  if (isOpenListPath(path)) {
+    isOpenList = true
+    path = normalizeOpenListPath(path)
+  }
+  
+  if (isOpenList && openlistClient.isEnabled()) {
+    const url = await openlistClient.getDownloadUrl(path)
+    return url || path
+  }
+  
+  return path
+}
