@@ -301,7 +301,6 @@ class LibraryScanner {
    * @returns {LibraryItemScanData[]}
    */
   async scanFolder(library, folder) {
-<<<<<<< HEAD
     let folderPath = fileUtils.filePathToPOSIX(folder.path)
     
     // 检查是否为 OpenList 路径（通过前缀或 library.provider）
@@ -320,25 +319,12 @@ class LibraryScanner {
       Logger.info(`[LibraryScanner] Scanning local folder: ${folderPath}`)
     }
 
-=======
-    const isOpenList = library.isOpenList
-    const folderPath = fileUtils.filePathToPOSIX(folder.path)
-
-    // 对于 OpenList，路径可能需要添加前缀
-    const scanPath = isOpenList ? `openlist://${folderPath}` : folderPath
-
->>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
     const pathExists = await fileUtils.pathExists(scanPath, isOpenList)
     if (!pathExists) {
       Logger.error(`[scandir] Invalid folder path does not exist "${folderPath}"`)
       return []
     }
 
-<<<<<<< HEAD
-=======
-    Logger.info(`[LibraryScanner] Scanning ${isOpenList ? 'OpenList' : 'local'} folder: ${folderPath}`)
-
->>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
     const fileItems = await fileUtils.recurseFiles(scanPath, null, isOpenList)
     const libraryItemGrouping = scanUtils.groupFileItemsIntoLibraryItemDirs(library.mediaType, fileItems, library.settings.audiobooksOnly)
 
