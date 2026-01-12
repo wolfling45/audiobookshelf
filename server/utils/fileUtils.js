@@ -10,12 +10,19 @@ const openlistClient = require('../libs/openlistClient')
 
 /**
  * Make sure folder separator is POSIX for Windows file paths. e.g. "C:\Users\Abs" becomes "C:/Users/Abs"
- *
+ * 
  * @param {String} path - Ugly file path
  * @return {String} Pretty posix file path
  */
 const filePathToPOSIX = (path) => {
-  if (!global.isWin || !path) return path
+  if (!path) return path
+  
+  // 不要转换 OpenList 路径
+  if (path.startsWith('openlist:')) {
+    return path
+  }
+  
+  if (!global.isWin) return path
   return path.startsWith('\\\\') ? '\\\\' + path.slice(2).replace(/\\/g, '/') : path.replace(/\\/g, '/')
 }
 module.exports.filePathToPOSIX = filePathToPOSIX

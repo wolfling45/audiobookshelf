@@ -301,20 +301,27 @@ class LibraryScanner {
    * @returns {LibraryItemScanData[]}
    */
   async scanFolder(library, folder) {
-    let folderPath = fileUtils.filePathToPOSIX(folder.path)
+    Logger.debug(`[LibraryScanner] scanFolder called with path: "${folder.path}", library.provider: "${library.provider}"`)
     
-    // 检查是否为 OpenList 路径（通过前缀或 library.provider）
-    let isOpenList = library.isOpenList || fileUtils.isOpenListPath(folderPath)
+    // 先检查原始路径是否为 OpenList 路径（在 POSIX 转换之前）
+    let isOpenList = library.isOpenList || fileUtils.isOpenListPath(folder.path)
+    
+    Logger.debug(`[LibraryScanner] isOpenList: ${isOpenList}, library.isOpenList: ${library.isOpenList}, hasPrefix: ${fileUtils.isOpenListPath(folder.path)}`)
+    
+    // 如果是 OpenList 路径，不要进行 POSIX 转换
+    let folderPath = isOpenList ? folder.path : fileUtils.filePathToPOSIX(folder.path)
     
     // 标准化路径格式
     let scanPath = folderPath
     if (isOpenList) {
-      // 如果已经有 openlist:// 前缀，保持不变
+      // 如果已经有 openlist: 前缀，保持不变
       if (!fileUtils.isOpenListPath(folderPath)) {
         // 如果没有前缀但 library 标记为 openlist，添加前缀
-        scanPath = `openlist://${folderPath}`
+        scanPath = `openlist:${folderPath}`
       }
-      Logger.info(`[LibraryScanner] Scanning OpenList folder: ${folderPath}`)
+      const normalizedPath = fileUtils.normalizeOpenListPath(scanPath)
+      Logger.info(`[LibraryScanner] Scanning OpenList folder: ${normalizedPath}`)
+      Logger.debug(`[LibraryScanner] Original path: "${folder.path}", Scan path: "${scanPath}", Normalized: "${normalizedPath}"`)
     } else {
       Logger.info(`[LibraryScanner] Scanning local folder: ${folderPath}`)
     }
