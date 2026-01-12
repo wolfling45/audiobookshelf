@@ -54,6 +54,31 @@ class LibraryFolder extends Model {
       addedAt: this.createdAt.valueOf()
     }
   }
+
+  /**
+   * Check if this folder is an OpenList path
+   * @returns {boolean}
+   */
+  get isOpenList() {
+    return this.path && this.path.startsWith('openlist:')
+  }
+
+  /**
+   * Get normalized path (without openlist: prefix)
+   * @returns {string}
+   */
+  get normalizedPath() {
+    if (this.isOpenList) {
+      // 移除 openlist: 前缀和所有斜杠
+      let normalized = this.path.replace(/^openlist:\/*/i, '')
+      // 确保以 / 开头
+      if (!normalized.startsWith('/')) {
+        normalized = '/' + normalized
+      }
+      return normalized
+    }
+    return this.path
+  }
 }
 
 module.exports = LibraryFolder

@@ -204,6 +204,8 @@ class ApiRouter {
     // File System Routes
     //
     this.router.get('/filesystem', FileSystemController.getPaths.bind(this))
+    this.router.get('/filesystem/openlist', FileSystemController.getOpenListPaths.bind(this))
+    this.router.get('/filesystem/openlist/status', FileSystemController.getOpenListStatus.bind(this))
     this.router.post('/filesystem/pathexists', FileSystemController.checkPathExists.bind(this))
 
     //

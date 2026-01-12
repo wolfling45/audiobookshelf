@@ -29,9 +29,11 @@
         </div>
 
         <ui-btn class="w-full mt-2" color="bg-primary" @click="browseForFolder">{{ $strings.ButtonBrowseForFolder }}</ui-btn>
+        <ui-btn class="w-full mt-2" color="bg-success" @click="browseForOpenListFolder">{{ $strings.ButtonBrowseOpenList || 'Browse OpenList' }}</ui-btn>
       </div>
     </div>
-    <modals-libraries-lazy-folder-chooser v-else :paths="folderPaths" @back="showDirectoryPicker = false" @select="selectFolder" />
+    <modals-libraries-lazy-folder-chooser v-if="showDirectoryPicker" :paths="folderPaths" @back="showDirectoryPicker = false" @select="selectFolder" />
+    <modals-libraries-lazy-open-list-chooser v-if="showOpenListPicker" :paths="folderPaths" @back="showOpenListPicker = false" @select="selectFolder" />
   </div>
 </template>
 
@@ -52,6 +54,7 @@ export default {
       icon: '',
       folders: [],
       showDirectoryPicker: false,
+      showOpenListPicker: false,
       newFolderPath: '',
       mediaType: null
     }
@@ -93,6 +96,11 @@ export default {
     },
     browseForFolder() {
       this.showDirectoryPicker = true
+      this.showOpenListPicker = false
+    },
+    browseForOpenListFolder() {
+      this.showOpenListPicker = true
+      this.showDirectoryPicker = false
     },
     getLibraryData() {
       return {
@@ -133,6 +141,7 @@ export default {
     selectFolder(fullPath) {
       this.folders.push({ fullPath })
       this.showDirectoryPicker = false
+      this.showOpenListPicker = false
       this.formUpdated()
     },
     removeFolder(folder) {
@@ -142,6 +151,8 @@ export default {
     backArrowPress() {
       if (this.showDirectoryPicker) {
         this.showDirectoryPicker = false
+      } else if (this.showOpenListPicker) {
+        this.showOpenListPicker = false
       }
     },
     init() {
@@ -152,6 +163,7 @@ export default {
       this.mediaType = this.library ? this.library.mediaType : 'book'
 
       this.showDirectoryPicker = false
+      this.showOpenListPicker = false
     }
   },
   mounted() {

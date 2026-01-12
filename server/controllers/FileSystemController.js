@@ -5,6 +5,7 @@ const fs = require('../libs/fsExtra')
 const { toNumber } = require('../utils/index')
 const fileUtils = require('../utils/fileUtils')
 const Database = require('../Database')
+const openlistClient = require('../libs/openlistClient')
 
 /**
  * @typedef RequestUserObject
@@ -74,6 +75,111 @@ class FileSystemController {
       posix: !global.isWin,
       directories
     })
+  }
+
+  /**
+   * GET: /api/filesystem/openlist
+   * Get OpenList directories
+   *
+   * @param {RequestWithUser} req
+   * @param {Response} res
+   */
+  async getOpenListPaths(req, res) {
+    if (!req.user.isAdminOrUp) {
+      Logger.error(`[FileSystemController] Non-admin user "${req.user.username}" attempting to get OpenList paths`)
+      return res.sendStatus(403)
+    }
+
+    if (!openlistClient.isEnabled()) {
+      Logger.error(`[FileSystemController] OpenList client not configured`)
+      return res.status(400).json({
+        error: 'OpenList not configured. Please set OPENLIST_URL and OPENLIST_TOKEN environment variables.'
+      })
+    }
+
+    const relpath = req.query.path || '/'
+    Logger.debug(`[FileSystemController] Getting OpenList paths at ${relpath}`)
+
+    try {
+      const dirData = await openlistClient.listDirectory(relpath)
+      
+      if (!dirData || !dirData.content) {
+        Logger.error(`[FileSystemController] Failed to list OpenList directory: ${relpath}`)
+        return res.status(500).json({
+          error: 'Failed to list directory'
+        })
+      }
+
+      // 只返回目录，不返回文件
+      const directories = dirData.content
+        .filter(item => item.is_dir)
+        .map(item => {
+          const itemPath = relpath === '/' ? `/${item.name}` : `${relpath}/${item.name}`
+          return {
+            path: itemPath,
+            dirname: item.name,
+            level: (relpath.split('/').filter(p => p).length)
+          }
+        })
+
+      Logger.debug(`[FileSystemController] Found ${directories.length} directories in OpenList path: ${relpath}`)
+
+      res.json({
+        posix: true,
+        directories,
+        isOpenList: true
+      })
+    } catch (error) {
+      Logger.error(`[FileSystemController] Error getting OpenList paths:`, error)
+      res.status(500).json({
+        error: 'Failed to get OpenList directories'
+      })
+    }
+  }
+
+  /**
+   * GET: /api/filesystem/openlist/status
+   * Check OpenList connection status
+   *
+   * @param {RequestWithUser} req
+   * @param {Response} res
+   */
+  async getOpenListStatus(req, res) {
+    if (!req.user.isAdminOrUp) {
+      Logger.error(`[FileSystemController] Non-admin user "${req.user.username}" attempting to check OpenList status`)
+      return res.sendStatus(403)
+    }
+
+    const enabled = openlistClient.isEnabled()
+    
+    if (!enabled) {
+      return res.json({
+        enabled: false,
+        connected: false,
+        message: 'OpenList not configured'
+      })
+    }
+
+    try {
+      const connected = await openlistClient.testConnection()
+      const settings = connected ? await openlistClient.getSettings() : null
+      
+      res.json({
+        enabled: true,
+        connected,
+        settings: settings ? {
+          title: settings.site_title,
+          version: settings.version
+        } : null
+      })
+    } catch (error) {
+      Logger.error(`[FileSystemController] Error checking OpenList status:`, error)
+      res.json({
+        enabled: true,
+        connected: false,
+        error: error.message
+      })
+    }
   }
 
   /**

@@ -301,38 +301,102 @@ class LibraryScanner {
    * @returns {LibraryItemScanData[]}
    */
   async scanFolder(library, folder) {
-    Logger.debug(`[LibraryScanner] scanFolder called with path: "${folder.path}", library.provider: "${library.provider}"`)
+    // 检查是否为 OpenList 路径
+    // 优先级：folder.isOpenList > library.isOpenList > library.provider
+    const isOpenList = folder.isOpenList || library.isOpenList
     
-    // 先检查原始路径是否为 OpenList 路径（在 POSIX 转换之前）
-    let isOpenList = library.isOpenList || fileUtils.isOpenListPath(folder.path)
+    // 获取原始路径
+    const originalPath = folder.path
     
-    Logger.debug(`[LibraryScanner] isOpenList: ${isOpenList}, library.isOpenList: ${library.isOpenList}, hasPrefix: ${fileUtils.isOpenListPath(folder.path)}`)
+    // 获取标准化路径（去掉 openlist: 前缀）
+    const normalizedPath = folder.normalizedPath || folder.path
     
-    // 如果是 OpenList 路径，不要进行 POSIX 转换
-    let folderPath = isOpenList ? folder.path : fileUtils.filePathToPOSIX(folder.path)
+    Logger.debug(`[LibraryScanner] scanFolder - originalPath: "${originalPath}", isOpenList: ${isOpenList}`)
     
-    // 标准化路径格式
-    let scanPath = folderPath
     if (isOpenList) {
-      // 如果已经有 openlist: 前缀，保持不变
-      if (!fileUtils.isOpenListPath(folderPath)) {
-        // 如果没有前缀但 library 标记为 openlist，添加前缀
-        scanPath = `openlist:${folderPath}`
-      }
-      const normalizedPath = fileUtils.normalizeOpenListPath(scanPath)
       Logger.info(`[LibraryScanner] Scanning OpenList folder: ${normalizedPath}`)
-      Logger.debug(`[LibraryScanner] Original path: "${folder.path}", Scan path: "${scanPath}", Normalized: "${normalizedPath}"`)
-    } else {
-      Logger.info(`[LibraryScanner] Scanning local folder: ${folderPath}`)
-    }
+      
+      // 对于 OpenList，直接使用标准化路径，不进行 POSIX 转换
+      const pathExists = await fileUtils.pathExists(normalizedPath, true)
+      if (!pathExists) {
+        Logger.error(`[scandir] Invalid OpenList folder path does not exist "${normalizedPath}"`)
+        return []
+      }
 
-    const pathExists = await fileUtils.pathExists(scanPath, isOpenList)
+      const fileItems = await fileUtils.recurseFiles(normalizedPath, null, true)
+      const libraryItemGrouping = scanUtils.groupFileItemsIntoLibraryItemDirs(library.mediaType, fileItems, library.settings.audiobooksOnly)
+
+      if (!Object.keys(libraryItemGrouping).length) {
+        Logger.error(`Root path has no media folders: ${normalizedPath}`)
+        return []
+      }
+
+      const items = []
+      for (const libraryItemPath in libraryItemGrouping) {
+        let isFile = false
+        let libraryItemData = null
+        let fileObjs = []
+        
+        if (libraryItemPath === libraryItemGrouping[libraryItemPath]) {
+          // Media file in root only get title
+          libraryItemData = {
+            mediaMetadata: {
+              title: Path.basename(libraryItemPath, Path.extname(libraryItemPath))
+            },
+            path: Path.posix.join(normalizedPath, libraryItemPath),
+            relPath: libraryItemPath
+          }
+          fileObjs = await scanUtils.buildLibraryFile(normalizedPath, [libraryItemPath])
+          isFile = true
+        } else {
+          libraryItemData = scanUtils.getDataFromMediaDir(library.mediaType, normalizedPath, libraryItemPath)
+          fileObjs = await scanUtils.buildLibraryFile(libraryItemData.path, libraryItemGrouping[libraryItemPath])
+        }
+
+        const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path, true)
+
+        if (!libraryItemFolderStats) {
+          Logger.warn(`[LibraryScanner] Failed to get stats for OpenList library item "${libraryItemData.path}"`)
+          continue
+        }
+
+        if (!libraryItemFolderStats.ino) {
+          Logger.warn(`[LibraryScanner] OpenList library item folder "${libraryItemData.path}" has no inode value`)
+          continue
+        }
+
+        items.push(
+          new LibraryItemScanData({
+            libraryFolderId: folder.id,
+            libraryId: folder.libraryId,
+            mediaType: library.mediaType,
+            ino: libraryItemFolderStats.ino,
+            mtimeMs: libraryItemFolderStats.mtimeMs || 0,
+            ctimeMs: libraryItemFolderStats.ctimeMs || 0,
+            birthtimeMs: libraryItemFolderStats.birthtimeMs || 0,
+            path: libraryItemData.path,
+            relPath: libraryItemData.relPath,
+            isFile,
+            mediaMetadata: libraryItemData.mediaMetadata || null,
+            libraryFiles: fileObjs
+          })
+        )
+      }
+
+      return items
+    }
+    
+    // 本地文件系统路径
+    const folderPath = fileUtils.filePathToPOSIX(normalizedPath)
+    Logger.info(`[LibraryScanner] Scanning local folder: ${folderPath}`)
+
+    const pathExists = await fs.pathExists(folderPath)
     if (!pathExists) {
       Logger.error(`[scandir] Invalid folder path does not exist "${folderPath}"`)
       return []
     }
 
-    const fileItems = await fileUtils.recurseFiles(scanPath, null, isOpenList)
+    const fileItems = await fileUtils.recurseFiles(folderPath)
     const libraryItemGrouping = scanUtils.groupFileItemsIntoLibraryItemDirs(library.mediaType, fileItems, library.settings.audiobooksOnly)
 
     if (!Object.keys(libraryItemGrouping).length) {
@@ -361,7 +425,7 @@ class LibraryScanner {
         fileObjs = await scanUtils.buildLibraryFile(libraryItemData.path, libraryItemGrouping[libraryItemPath])
       }
 
-      const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path, isOpenList)
+      const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path, false)
 
       if (!libraryItemFolderStats) {
         Logger.warn(`[LibraryScanner] Failed to get stats for library item "${libraryItemData.path}"`)
