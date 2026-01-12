@@ -120,6 +120,7 @@ node server/utils/testOpenList.js /audiobooks
 
 ### 添加 OpenList 书库
 
+<<<<<<< HEAD
 #### 方法 1：通过路径前缀
 
 在添加书库时，使用 `openlist:` 前缀标识 OpenList 路径：
@@ -163,6 +164,30 @@ node server/utils/setOpenListProvider.js <library-id> local
 - 可以随时切换存储类型
 - 更符合数据库设计理念
 - 便于批量管理多个书库
+=======
+#### 方法 1：通过路径前缀（推荐）
+
+在添加书库时，使用 `openlist://` 前缀标识 OpenList 路径：
+
+1. 在 Audiobookshelf 中创建新书库
+2. 文件夹路径输入：`openlist:///audiobooks`（OpenList 中的路径）
+3. 系统会自动识别为 OpenList 存储
+
+示例路径：
+- `openlist:///audiobooks` - OpenList 根目录下的 audiobooks 文件夹
+- `openlist:///115/我的有声书` - 115 网盘中的路径
+- `openlist:///阿里云盘/Audiobooks` - 阿里云盘中的路径
+
+#### 方法 2：通过 provider 字段（需要数据库操作）
+
+直接在数据库中设置 library 的 provider 字段为 `openlist`：
+
+```sql
+UPDATE libraries SET provider = 'openlist' WHERE id = 'your-library-id';
+```
+
+然后在 libraryFolders 中使用普通路径（不需要 `openlist://` 前缀）。
+>>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
 
 ### 扫描行为
 

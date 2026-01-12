@@ -84,14 +84,18 @@ node server/utils/testOpenList.js /115
 
 ### 第六步：添加书库
 
+<<<<<<< HEAD
 有两种方法添加 OpenList 书库：
 
 #### 方法 1：使用路径前缀（推荐，简单）
 
+=======
+>>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
 在 Audiobookshelf 中添加新书库：
 
 1. 点击"添加书库"
 2. 名称：`我的有声书`
+<<<<<<< HEAD
 3. 文件夹路径：`openlist:/115/Audiobooks`（注意：可以是 `openlist:/`、`openlist://` 或 `openlist:///`）
 4. 点击"添加"
 
@@ -142,6 +146,15 @@ node server/utils/setOpenListProvider.js <library-id>
 
 详见：[故障排查指南](./openlist-troubleshooting.md#问题-1-扫描时提示-root-path-has-no-media-folders)
 
+=======
+3. 文件夹路径：`openlist:///115/Audiobooks`
+4. 点击"添加"
+
+系统会自动识别这是 OpenList 路径并开始扫描。
+
+## 常见问题
+
+>>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
 ### Q: 扫描很慢怎么办？
 
 A: 确保启用了优化选项：

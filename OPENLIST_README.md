@@ -182,6 +182,7 @@ OpenList 客户端测试
 
 ### 常见问题
 
+<<<<<<< HEAD
 **路径识别错误？**
 ```bash
 # 使用 provider 方式（推荐）
@@ -189,6 +190,8 @@ node server/utils/setOpenListProvider.js --list
 node server/utils/setOpenListProvider.js <library-id>
 ```
 
+=======
+>>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
 **连接失败？**
 ```bash
 curl http://localhost:5244/ping
@@ -210,8 +213,11 @@ export FAST_SCAN_MODE=true
 export SKIP_EMBEDDED_CHAPTERS=true
 ```
 
+<<<<<<< HEAD
 **详细故障排查指南**: [docs/openlist-troubleshooting.md](docs/openlist-troubleshooting.md)
 
+=======
+>>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
 ## 🔄 工作流程
 
 ### 完整流程
