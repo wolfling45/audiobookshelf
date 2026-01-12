@@ -301,15 +301,21 @@ class LibraryScanner {
    * @returns {LibraryItemScanData[]}
    */
   async scanFolder(library, folder) {
+    const isOpenList = library.isOpenList
     const folderPath = fileUtils.filePathToPOSIX(folder.path)
 
-    const pathExists = await fs.pathExists(folderPath)
+    // 对于 OpenList，路径可能需要添加前缀
+    const scanPath = isOpenList ? `openlist://${folderPath}` : folderPath
+
+    const pathExists = await fileUtils.pathExists(scanPath, isOpenList)
     if (!pathExists) {
       Logger.error(`[scandir] Invalid folder path does not exist "${folderPath}"`)
       return []
     }
 
-    const fileItems = await fileUtils.recurseFiles(folderPath)
+    Logger.info(`[LibraryScanner] Scanning ${isOpenList ? 'OpenList' : 'local'} folder: ${folderPath}`)
+
+    const fileItems = await fileUtils.recurseFiles(scanPath, null, isOpenList)
     const libraryItemGrouping = scanUtils.groupFileItemsIntoLibraryItemDirs(library.mediaType, fileItems, library.settings.audiobooksOnly)
 
     if (!Object.keys(libraryItemGrouping).length) {
@@ -338,7 +344,12 @@ class LibraryScanner {
         fileObjs = await scanUtils.buildLibraryFile(libraryItemData.path, libraryItemGrouping[libraryItemPath])
       }
 
-      const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path)
+      const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path, isOpenList)
+
+      if (!libraryItemFolderStats) {
+        Logger.warn(`[LibraryScanner] Failed to get stats for library item "${libraryItemData.path}"`)
+        continue
+      }
 
       if (!libraryItemFolderStats.ino) {
         Logger.warn(`[LibraryScanner] Library item folder "${libraryItemData.path}" has no inode value`)

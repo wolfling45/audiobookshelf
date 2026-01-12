@@ -182,6 +182,12 @@ class Library extends Model {
   get isBook() {
     return this.mediaType === 'book'
   }
+  get isOpenList() {
+    return this.provider === 'openlist'
+  }
+  get isLocal() {
+    return !this.provider || this.provider === 'local'
+  }
   /**
    * @returns {string[]}
    */
