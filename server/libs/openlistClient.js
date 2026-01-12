@@ -18,12 +18,20 @@ class OpenListClient {
     if (this.enabled) {
       Logger.info(`[OpenList] Client initialized with URL: ${this.baseURL}`)
       
+      // 确定 Token 格式
+      // 根据 OpenList/AList API 文档，Token 应该直接放在 Authorization header 中
+      // 不需要 Bearer 前缀
+      // Token 格式: openlist-{uuid}{random_string}
+      const authHeader = this.token
+      
+      Logger.debug(`[OpenList] Token format: ${authHeader.substring(0, 20)}...`)
+      
       // 创建 axios 实例
       this.client = axios.create({
         baseURL: this.baseURL,
         timeout: 30000,
         headers: {
-          'Authorization': `Bearer ${this.token}`,
+          'Authorization': authHeader,
           'Content-Type': 'application/json'
         }
       })
@@ -35,7 +43,16 @@ class OpenListClient {
           Logger.error('[OpenList] API request failed:', error.message)
           if (error.response) {
             Logger.error('[OpenList] Response status:', error.response.status)
-            Logger.error('[OpenList] Response data:', error.response.data)
+            Logger.error('[OpenList] Response data:', JSON.stringify(error.response.data))
+            if (error.response.status === 401) {
+              Logger.error('[OpenList] Authentication failed (401 Unauthorized)')
+              Logger.error('[OpenList] Current token format:', this.token.substring(0, 20) + '...')
+              Logger.error('[OpenList] Please verify:')
+              Logger.error('[OpenList]   1. Token is correct and not expired')
+              Logger.error('[OpenList]   2. Token was copied completely from: Settings -> Other -> Token')
+              Logger.error('[OpenList]   3. Token format should be: openlist-{uuid}{random_string}')
+              Logger.error('[OpenList]   4. Try regenerating the token in OpenList admin panel')
+            }
           }
           throw error
         }

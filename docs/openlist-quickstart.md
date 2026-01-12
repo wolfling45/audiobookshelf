@@ -28,7 +28,13 @@ docker run -d \
 
 1. 在 OpenList 管理后台，进入"设置" -> "其他"
 2. 找到"令牌"部分
-3. 复制或生成新的 Token
+3. 复制完整的 Token
+
+**重要提示：**
+- Token 格式：`openlist-{uuid}{random_string}`
+- 示例：`openlist-604f88cd-0b69-4f2f-82ad-2cad65f7b4edczMXctzT8V3xtNUKxY7xNRtJ2uIE0VHERNYutZFG53L15Pls2ll18UhNj8dzYNd2`
+- 必须复制完整的 Token，包括 `openlist-` 前缀
+- 不要添加引号、空格或其他字符
 
 ### 第四步：配置 Audiobookshelf
 
@@ -233,18 +239,34 @@ tail -f logs/combined.log | grep OpenList
 curl http://localhost:5244/ping
 
 # 2. 测试 API Token
-curl -H "Authorization: Bearer your-token" \
+curl -H "Authorization: your-token" \
      http://localhost:5244/api/public/settings
 
 # 3. 列出目录内容
 curl -X POST http://localhost:5244/api/fs/list \
-     -H "Authorization: Bearer your-token" \
+     -H "Authorization: your-token" \
      -H "Content-Type: application/json" \
      -d '{"path":"/115","password":"","page":1,"per_page":0,"refresh":false}'
 
-# 4. 运行完整测试
+# 4. 运行认证测试（推荐）
+node server/utils/testOpenListAuth.js
+
+# 5. 运行完整测试
 node server/utils/testOpenList.js /115
 
-# 5. 查看 Audiobookshelf 日志
+# 6. 查看 Audiobookshelf 日志
 docker logs -f audiobookshelf | grep -E "OpenList|ERROR"
+```
+
+### 认证问题排查
+
+如果遇到 401 错误（"token is invalidated"），请参考：
+- [OpenList 认证问题排查指南](./openlist-auth-troubleshooting.md)
+
+快速诊断：
+```bash
+# 运行认证测试脚本，自动测试不同的认证格式
+export OPENLIST_URL=http://localhost:5244
+export OPENLIST_TOKEN=your-token-here
+node server/utils/testOpenListAuth.js
 ```
