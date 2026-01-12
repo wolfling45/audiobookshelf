@@ -207,31 +207,21 @@ module.exports.shouldIgnoreFile = (path) => {
  * @returns {boolean}
  */
 function isOpenListPath(path) {
-<<<<<<< HEAD
   if (!path) return false
   // 支持多种格式：
   // - openlist:///path
   // - openlist://path
   // - openlist:/path
   return path.startsWith('openlist:')
-=======
-  // OpenList 路径以 openlist:// 开头
-  return path && path.startsWith('openlist://')
->>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
 }
 module.exports.isOpenListPath = isOpenListPath
 
 /**
-<<<<<<< HEAD
  * Normalize OpenList path (remove openlist:// prefix and ensure proper format)
-=======
- * Normalize OpenList path (remove openlist:// prefix)
->>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
  * @param {string} path
  * @returns {string}
  */
 function normalizeOpenListPath(path) {
-<<<<<<< HEAD
   if (!path) return path
   
   if (isOpenListPath(path)) {
@@ -246,11 +236,6 @@ function normalizeOpenListPath(path) {
     return normalized
   }
   
-=======
-  if (isOpenListPath(path)) {
-    return path.replace('openlist://', '')
-  }
->>>>>>> fab73335f1eeb57caeab801c64c28bbaa3d5870f
   return path
 }
 module.exports.normalizeOpenListPath = normalizeOpenListPath
