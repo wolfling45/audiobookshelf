@@ -132,10 +132,23 @@ class LibraryController {
     //   returns 400 if a folder fails to access
     newLibraryPayload.libraryFolders = req.body.folders.map((f) => {
       const fpath = f.fullPath || f.path
-      f.path = fileUtils.filePathToPOSIX(Path.resolve(fpath))
+      
+      // 检查是否为 OpenList 路径
+      if (fileUtils.isOpenListPath(fpath)) {
+        // OpenList 路径保持原样，不进行 Path.resolve
+        f.path = fpath
+      } else {
+        f.path = fileUtils.filePathToPOSIX(Path.resolve(fpath))
+      }
       return f
     })
     for (const folder of newLibraryPayload.libraryFolders) {
+      // OpenList 路径不需要在本地创建目录
+      if (fileUtils.isOpenListPath(folder.path)) {
+        Logger.info(`[LibraryController] OpenList folder path: ${folder.path}`)
+        continue
+      }
+      
       try {
         // Create folder if it doesn't exist
         await fs.ensureDir(folder.path)
@@ -382,12 +395,32 @@ class LibraryController {
       req.body.folders = req.body.folders.map((f) => {
         if (!f.id) {
           const path = f.fullPath || f.path
-          f.path = fileUtils.filePathToPOSIX(Path.resolve(path))
+          
+          // 检查是否为 OpenList 路径
+          if (fileUtils.isOpenListPath(path)) {
+            // OpenList 路径保持原样
+            f.path = path
+          } else {
+            f.path = fileUtils.filePathToPOSIX(Path.resolve(path))
+          }
           newFolderPaths.push(f.path)
         }
         return f
       })
       for (const path of newFolderPaths) {
+        // OpenList 路径不需要在本地创建目录
+        if (fileUtils.isOpenListPath(path)) {
+          Logger.info(`[LibraryController] Adding OpenList folder path: ${path}`)
+          // Create folder record
+          const libraryFolder = await Database.libraryFolderModel.create({
+            path,
+            libraryId: req.library.id
+          })
+          Logger.info(`[LibraryController] Created OpenList folder "${libraryFolder.path}" for library "${req.library.name}"`)
+          hasFolderUpdates = true
+          continue
+        }
+        
         const pathExists = await fs.pathExists(path)
         if (!pathExists) {
           const success = await fs

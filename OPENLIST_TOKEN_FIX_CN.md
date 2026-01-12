@@ -1,278 +1,151 @@
-# OpenList Token 认证问题修复
+# OpenList 扫描问题修复
 
 ## 问题分析
 
 您遇到的问题：
-- `/ping` 端点返回 200 OK ✅
-- `/api/fs/list` 端点返回 401 错误："token is invalidated" ❌
+1. ✅ 媒体库面板可以正常连接 OpenList
+2. ❌ 扫描时报错：`isOpenList: false`，路径被识别为本地路径
 
-这说明：
-1. OpenList 服务器连接正常
-2. Token 认证有问题
+日志显示：
+```
+scanFolder - originalPath: "/app/openlist:/115/audiobook3/儿童故事", isOpenList: false
+Scanning local folder: /app/openlist:/115/audiobook3/儿童故事
+Root path has no media folders: /app/openlist:/115/audiobook3/儿童故事
+```
 
 ## 根本原因
 
-OpenList/AList API 的认证头格式可能与我们当前使用的格式不匹配。不同版本的 OpenList 可能期望不同的认证格式。
+之前的代码在创建书库时，会将 `openlist:/path` 错误地转换为 `/app/openlist:/path`：
+
+```javascript
+// 错误的代码
+f.path = fileUtils.filePathToPOSIX(Path.resolve(fpath))
+// Path.resolve('openlist:/115/...') => '/app/openlist:/115/...'
+```
 
 ## 已完成的修复
 
-### 1. 修改了认证逻辑 (`server/libs/openlistClient.js`)
+### 1. 修复了路径处理逻辑 (`server/controllers/LibraryController.js`)
 
-**之前的代码：**
-```javascript
-// 如果 token 以 openlist- 开头，直接使用；否则加 Bearer 前缀
-const authHeader = this.token.startsWith('openlist-') ? this.token : `Bearer ${this.token}`
-```
+**修改内容：**
+- 创建书库时，OpenList 路径不再经过 `Path.resolve()` 处理
+- 更新书库时，同样跳过 OpenList 路径的本地目录检查
+- OpenList 路径保持原样存储到数据库
 
-**修改后：**
-```javascript
-// 直接使用 token，不加任何前缀
-const authHeader = this.token
-```
+### 2. 创建了路径修复工具 (`server/utils/fixOpenListPaths.js`)
 
-**原因：** 根据 OpenList API 文档，Token 应该直接放在 `Authorization` 头中。
+用于修复数据库中已经存储的错误路径。
 
-### 2. 创建了认证测试工具 (`server/utils/testOpenListAuth.js`)
+### 3. 之前已修复的认证问题
 
-这个脚本会自动测试 5 种不同的认证格式：
+- Token 认证逻辑已修复
+- 媒体库面板已可正常连接
 
-1. `Authorization: {token}` （当前使用）
-2. `Authorization: Bearer {token}`
-3. `Token: {token}`
-4. `X-Token: {token}`
-5. `Alist-Token: {token}`
+## 如何修复现有书库
 
-### 3. 改进了错误日志
+由于您的书库路径已经被错误地存储为 `/app/openlist:/115/audiobook3/儿童故事`，需要修复数据库中的路径。
 
-现在当出现 401 错误时，会显示更详细的信息：
-- 当前使用的 Token 格式
-- 可能的原因
-- 解决建议
-
-### 4. 创建了详细的故障排查文档
-
-- `docs/openlist-auth-troubleshooting.md` - 完整的故障排查指南
-- `OPENLIST_AUTH_FIX.md` - 快速修复说明
-
-## 如何测试
-
-### 方法 1: 使用认证测试脚本（推荐）
+### 方法 1: 运行修复脚本（推荐）
 
 ```bash
-# 进入 Docker 容器
-docker exec -it audiobookshelf_w-1 sh
-
-# 设置环境变量（替换为您的实际值）
-export OPENLIST_URL=http://your-openlist-server:5244
-export OPENLIST_TOKEN=openlist-604f88cd-0b69-4f2f-82ad-2cad65f7b4edczMXctzT8V3xtNUKxY7xNRtJ2uIE0VHERNYutZFG53L15Pls2ll18UhNj8dzYNd2
-
-# 运行测试
-node server/utils/testOpenListAuth.js
+# 在 Docker 容器中运行
+docker exec -it audiobookshelf_w-1 node server/utils/fixOpenListPaths.js
 ```
 
-脚本会输出类似这样的结果：
+脚本会自动：
+1. 查找所有包含错误 OpenList 路径的文件夹
+2. 将 `/app/openlist:/path` 修复为 `openlist:/path`
+3. 显示修复结果
 
+**期望输出：**
 ```
-OpenList 认证测试
+OpenList 路径修复工具
 ============================================================
-URL: http://your-openlist-server:5244
-Token: openlist-604f88cd-0b...
-============================================================
+✅ 数据库连接成功
 
-步骤 1: 测试连接 (/ping)
+找到 1 个书库文件夹
 ------------------------------------------------------------
-✅ /ping 成功 (状态码: 200)
 
-步骤 2: 测试不同的认证格式
-============================================================
-
-测试: 格式 1: Authorization: {token}
-------------------------------------------------------------
-✅ 成功！
-   状态码: 200
-   响应码: 200
-   消息: success
-   找到 10 个项目
-
-测试: 格式 2: Authorization: Bearer {token}
-------------------------------------------------------------
-❌ 失败
-   HTTP 状态: 401
-   错误消息: token is invalidated
-
-...
+📁 文件夹 ID: xxx
+   书库 ID: xxx
+   ❌ 错误路径: /app/openlist:/115/audiobook3/儿童故事
+   ✅ 正确路径: openlist:/115/audiobook3/儿童故事
+   ✅ 已修复
 
 ============================================================
-测试总结
-============================================================
-成功的格式数量: 1/5
+修复完成
+   修复成功: 1
+   修复失败: 0
+   总计: 1
 
-✅ 推荐使用的认证格式:
-   格式 1: Authorization: {token}
-
-请更新 server/libs/openlistClient.js 使用此格式
+⚠️  请重启 Audiobookshelf 以应用更改
 ```
 
-### 方法 2: 手动测试
-
-如果无法运行脚本，可以使用 curl 手动测试：
-
+修复后重启容器：
 ```bash
-# 测试格式 1（当前代码使用的格式）
-curl -X POST http://your-openlist-server:5244/api/fs/list \
-  -H "Authorization: openlist-604f88cd-0b69-4f2f-82ad-2cad65f7b4ed..." \
-  -H "Content-Type: application/json" \
-  -d '{"path":"/","password":"","page":1,"per_page":10,"refresh":false}'
-
-# 如果失败，尝试格式 2
-curl -X POST http://your-openlist-server:5244/api/fs/list \
-  -H "Authorization: Bearer openlist-604f88cd-0b69-4f2f-82ad-2cad65f7b4ed..." \
-  -H "Content-Type: application/json" \
-  -d '{"path":"/","password":"","page":1,"per_page":10,"refresh":false}'
+docker-compose restart audiobookshelf
 ```
 
-成功的响应应该是：
-```json
-{
-  "code": 200,
-  "message": "success",
-  "data": {
-    "content": [...],
-    "total": 10
-  }
-}
+### 方法 2: 删除并重新创建书库
+
+如果修复脚本无法运行：
+
+1. 在 Audiobookshelf 中删除现有的 OpenList 书库
+2. 重新创建书库，使用正确的路径格式：`openlist:/115/audiobook3/儿童故事`
+3. 触发扫描
+
+## 验证修复
+
+重启后，触发扫描，日志应该显示：
+
+```
+scanFolder - originalPath: "openlist:/115/audiobook3/儿童故事", isOpenList: true
+Scanning OpenList folder: /115/audiobook3/儿童故事
+Found X items in /115/audiobook3/儿童故事
 ```
 
-### 方法 3: 重新生成 Token
+关键变化：
+- `isOpenList: true` ✅
+- `Scanning OpenList folder` ✅
 
-如果所有格式都失败，可能是 Token 本身有问题：
+## 完整修复清单
 
-1. 登录 OpenList 管理后台
-2. 进入 **设置 -> 其它 -> 令牌**
-3. 点击"重新生成"按钮
-4. **使用复制按钮**复制新 Token（不要手动选择）
-5. 确保复制了完整的 Token，包括 `openlist-` 前缀
-6. 更新 Docker Compose 或环境变量中的 `OPENLIST_TOKEN`
-7. 重启容器：
+| 问题 | 状态 | 修复文件 |
+|------|------|----------|
+| Token 认证 401 错误 | ✅ 已修复 | `server/libs/openlistClient.js` |
+| 路径被错误转换 | ✅ 已修复 | `server/controllers/LibraryController.js` |
+| 数据库中的错误路径 | 需要运行脚本 | `server/utils/fixOpenListPaths.js` |
+
+## 下一步
+
+1. **运行修复脚本**
+   ```bash
+   docker exec -it audiobookshelf_w-1 node server/utils/fixOpenListPaths.js
+   ```
+
+2. **重启容器**
    ```bash
    docker-compose restart audiobookshelf
    ```
 
-## 重启应用以应用修改
+3. **触发扫描**
+   - 在 Audiobookshelf 中进入书库
+   - 点击"扫描"按钮
 
-修改代码后需要重启：
+4. **查看日志确认**
+   ```bash
+   docker logs -f audiobookshelf_w-1 | grep OpenList
+   ```
 
-```bash
-# 如果使用 Docker Compose
-docker-compose restart audiobookshelf
-
-# 或者重新构建
-docker-compose up -d --build
-```
-
-## 验证修复
-
-重启后，尝试在 UI 中浏览 OpenList 文件夹：
-
-1. 登录 Audiobookshelf
-2. 进入"书库"页面
-3. 点击"添加书库"
-4. 点击"浏览 OpenList"按钮
-5. 应该能看到 OpenList 中的文件夹列表
-
-查看日志确认：
-```bash
-docker logs -f audiobookshelf_w-1 | grep OpenList
-```
-
-应该看到类似这样的日志：
-```
-[OpenList] Client initialized with URL: http://...
-[OpenList] Listing directory: /
-[OpenList] Found 5 items in /
-```
-
-## 如果问题仍未解决
+## 如果仍有问题
 
 请提供以下信息：
+1. 修复脚本的完整输出
+2. 扫描时的完整日志
+3. 书库设置截图
 
-1. **认证测试脚本的完整输出**
-   ```bash
-   node server/utils/testOpenListAuth.js > auth-test-result.txt 2>&1
-   ```
+## 参考文档
 
-2. **OpenList 版本**
-   ```bash
-   curl http://your-openlist-server:5244/api/public/settings | jq '.data.version'
-   ```
-
-3. **Token 格式**（前 20 个字符）
-   ```bash
-   echo $OPENLIST_TOKEN | cut -c1-20
-   ```
-
-4. **完整的错误日志**
-   ```bash
-   docker logs audiobookshelf_w-1 2>&1 | grep -A 5 -B 5 "401"
-   ```
-
-5. **网络配置**
-   - OpenList 和 Audiobookshelf 是否在同一 Docker 网络？
-   - 是否使用了反向代理（nginx, traefik 等）？
-   - 使用的是内网地址还是公网地址？
-
-## Token 格式说明
-
-正确的 OpenList Token 格式：
-
-```
-openlist-604f88cd-0b69-4f2f-82ad-2cad65f7b4edczMXctzT8V3xtNUKxY7xNRtJ2uIE0VHERNYutZFG53L15Pls2ll18UhNj8dzYNd2
-```
-
-特点：
-- ✅ 以 `openlist-` 开头
-- ✅ 包含 UUID 部分（36 个字符）
-- ✅ 包含随机字符串部分
-- ✅ 总长度约 80-100 个字符
-- ❌ 不包含空格、换行符
-- ❌ 不包含引号
-
-## 可能需要的代码调整
-
-如果测试发现需要使用不同的认证格式，我可以相应修改代码。
-
-例如，如果需要使用 Bearer 格式：
-
-```javascript
-// 在 server/libs/openlistClient.js 的 constructor 中
-const authHeader = `Bearer ${this.token}`
-```
-
-或者使用自定义头：
-
-```javascript
-// 在 server/libs/openlistClient.js 的 constructor 中
-this.client = axios.create({
-  baseURL: this.baseURL,
-  timeout: 30000,
-  headers: {
-    'Token': this.token,  // 使用 Token 头而不是 Authorization
-    'Content-Type': 'application/json'
-  }
-})
-```
-
-## 参考资料
-
-- [OpenList API 文档](https://openlistteam.github.io/docs/guide/api/fs.html)
-- [认证问题排查指南](docs/openlist-auth-troubleshooting.md)
-- [快速开始指南](docs/openlist-quickstart.md)
-
-## 总结
-
-1. ✅ 修改了认证逻辑，直接使用 Token（不加 Bearer 前缀）
-2. ✅ 创建了自动测试工具来诊断问题
-3. ✅ 改进了错误日志
-4. ✅ 创建了详细的故障排查文档
-
-**下一步：** 请运行认证测试脚本，并告诉我结果。根据测试结果，我可以进一步调整代码。
+- [OpenList 快速开始指南](docs/openlist-quickstart.md)
+- [OpenList 认证问题排查](docs/openlist-auth-troubleshooting.md)
+- [OpenList 集成文档](docs/openlist-integration.md)
