@@ -9,19 +9,53 @@ const { AudioMimeType } = require('./constants')
 const openlistClient = require('../libs/openlistClient')
 
 /**
+ * 全局缓存：存储 OpenList 文件元数据
+ * 在 recurseFilesOpenList 中填充，在 getFileTimestampsWithIno 中使用
+ * key: 文件完整路径, value: { size, mtimeMs, ctimeMs, birthtimeMs, ino }
+ * @type {Map<string, {size: number, mtimeMs: number, ctimeMs: number, birthtimeMs: number, ino: string}>}
+ */
+const openListFileMetadataCache = new Map()
+
+/**
+ * 缓存 OpenList 文件元数据
+ * @param {string} path - 文件完整路径
+ * @param {Object} metadata - 文件元数据
+ */
+function cacheOpenListFileMetadata(path, metadata) {
+  openListFileMetadataCache.set(path, metadata)
+}
+
+/**
+ * 从缓存获取 OpenList 文件元数据
+ * @param {string} path - 文件完整路径
+ * @returns {Object|null} 文件元数据
+ */
+function getCachedOpenListFileMetadata(path) {
+  return openListFileMetadataCache.get(path) || null
+}
+
+/**
+ * 清除 OpenList 文件元数据缓存
+ */
+function clearOpenListFileMetadataCache() {
+  openListFileMetadataCache.clear()
+  Logger.debug(`[fileUtils] OpenList file metadata cache cleared`)
+}
+
+/**
  * Make sure folder separator is POSIX for Windows file paths. e.g. "C:\Users\Abs" becomes "C:/Users/Abs"
- * 
+ *
  * @param {String} path - Ugly file path
  * @return {String} Pretty posix file path
  */
 const filePathToPOSIX = (path) => {
   if (!path) return path
-  
+
   // 不要转换 OpenList 路径
   if (path.startsWith('openlist:')) {
     return path
   }
-  
+
   if (!global.isWin) return path
   return path.startsWith('\\\\') ? '\\\\' + path.slice(2).replace(/\\/g, '/') : path.replace(/\\/g, '/')
 }
@@ -61,12 +95,35 @@ async function getFileTimestampsWithIno(path, isOpenList = false) {
     isOpenList = true
     path = normalizeOpenListPath(path)
   }
-  
+
   if (isOpenList && openlistClient.isEnabled()) {
+    // 首先检查本地缓存（由 recurseFilesOpenList 填充）
+    const cachedMetadata = getCachedOpenListFileMetadata(path)
+    if (cachedMetadata) {
+      Logger.debug(`[fileUtils] Using cached metadata for OpenList file: ${path}`)
+      return cachedMetadata
+    }
+
+    // 如果缓存中没有，尝试从 openlistClient 的缓存获取
+    const clientCached = openlistClient.getCachedFileInfo(path)
+    if (clientCached) {
+      Logger.debug(`[fileUtils] Using openlistClient cached info for: ${path}`)
+      const normalized = openlistClient.normalizeFileInfo(clientCached)
+      return {
+        size: normalized.size,
+        mtimeMs: normalized.mtimeMs,
+        ctimeMs: normalized.ctimeMs,
+        birthtimeMs: normalized.birthtimeMs,
+        ino: normalized.ino
+      }
+    }
+
+    // 最后才调用 API（应该很少发生）
     try {
+      Logger.warn(`[fileUtils] Cache miss for OpenList file, fetching from API: ${path}`)
       const fileInfo = await openlistClient.getFileInfo(path)
       if (!fileInfo) return false
-      
+
       const normalized = openlistClient.normalizeFileInfo(fileInfo)
       return {
         size: normalized.size,
@@ -80,7 +137,7 @@ async function getFileTimestampsWithIno(path, isOpenList = false) {
       return false
     }
   }
-  
+
   try {
     var stat = await fs.stat(path, { bigint: true })
     return {
@@ -230,19 +287,19 @@ module.exports.isOpenListPath = isOpenListPath
  */
 function normalizeOpenListPath(path) {
   if (!path) return path
-  
+
   if (isOpenListPath(path)) {
     // 移除 openlist: 前缀和所有斜杠
     let normalized = path.replace(/^openlist:\/*/i, '')
-    
+
     // 确保以 / 开头
     if (!normalized.startsWith('/')) {
       normalized = '/' + normalized
     }
-    
+
     return normalized
   }
-  
+
   return path
 }
 module.exports.normalizeOpenListPath = normalizeOpenListPath
@@ -260,13 +317,18 @@ module.exports.recurseFiles = async (path, relPathToReplace = null, isOpenList =
     isOpenList = true
     path = normalizeOpenListPath(path)
   }
-  
+
   if (isOpenList && openlistClient.isEnabled()) {
     return await recurseFilesOpenList(path, relPathToReplace)
   }
-  
+
   return await recurseFilesLocal(path, relPathToReplace)
 }
+
+// Export cache functions
+module.exports.cacheOpenListFileMetadata = cacheOpenListFileMetadata
+module.exports.getCachedOpenListFileMetadata = getCachedOpenListFileMetadata
+module.exports.clearOpenListFileMetadataCache = clearOpenListFileMetadataCache
 
 /**
  * Get array of files from OpenList
@@ -276,16 +338,19 @@ module.exports.recurseFiles = async (path, relPathToReplace = null, isOpenList =
  */
 async function recurseFilesOpenList(path, relPathToReplace = null) {
   Logger.info(`[fileUtils] Recursing OpenList directory: ${path}`)
-  
+
   if (!relPathToReplace) {
     relPathToReplace = path
   }
-  
+
   // 确保路径以 / 结尾
   if (!relPathToReplace.endsWith('/')) relPathToReplace += '/'
-  
+
   const audioExtensions = ['.mp3', '.m4a', '.m4b', '.flac', '.aac', '.ogg', '.opus', '.wav', '.wma', '.mp4']
-  
+
+  // 用于跟踪已缓存的目录
+  const cachedDirs = new Set()
+
   try {
     const files = await openlistClient.listDirectoryRecursive(path, {
       filter: (file) => {
@@ -293,32 +358,64 @@ async function recurseFilesOpenList(path, relPathToReplace = null) {
         return audioExtensions.includes(ext)
       }
     })
-    
+
     Logger.info(`[fileUtils] Found ${files.length} audio files in OpenList directory: ${path}`)
-    
-    // 转换为 FilePathItem 格式
-    return files.map(file => {
-      const normalized = openlistClient.normalizeFileInfo(file, path)
-      const relPath = normalized.path.replace(relPathToReplace, '')
-      const dirname = Path.dirname(relPath)
-      const deep = relPath.split('/').filter(p => p).length - 1
-      
-      return {
-        name: normalized.name,
-        path: relPath,
-        reldirpath: dirname === '.' ? '' : dirname,
-        fullpath: normalized.path,
-        extension: Path.extname(normalized.name),
-        deep: deep,
-        // 保留 OpenList 特有信息
-        size: normalized.size,
-        mtimeMs: normalized.mtimeMs,
-        ctimeMs: normalized.ctimeMs,
-        birthtimeMs: normalized.birthtimeMs,
-        ino: normalized.ino,
-        isOpenList: true
-      }
-    }).sort((a, b) => a.deep - b.deep)
+
+    // 转换为 FilePathItem 格式，并缓存元数据
+    const result = files
+      .map((file) => {
+        const normalized = openlistClient.normalizeFileInfo(file, path)
+        const relPath = normalized.path.replace(relPathToReplace, '')
+        const dirname = Path.dirname(relPath)
+        const deep = relPath.split('/').filter((p) => p).length - 1
+
+        // 缓存文件元数据，供后续 getFileTimestampsWithIno 使用
+        // 这样就不需要再次调用 API 获取文件信息
+        const metadata = {
+          size: normalized.size,
+          mtimeMs: normalized.mtimeMs,
+          ctimeMs: normalized.ctimeMs,
+          birthtimeMs: normalized.birthtimeMs,
+          ino: normalized.ino
+        }
+        cacheOpenListFileMetadata(normalized.path, metadata)
+
+        // 缓存文件所在目录的元数据（使用文件的时间戳作为目录的时间戳）
+        // 这样 LibraryScanner 获取目录 stats 时可以使用缓存
+        const dirPath = Path.dirname(normalized.path)
+        if (!cachedDirs.has(dirPath)) {
+          cachedDirs.add(dirPath)
+          const dirMetadata = {
+            size: 0,
+            mtimeMs: normalized.mtimeMs,
+            ctimeMs: normalized.ctimeMs,
+            birthtimeMs: normalized.birthtimeMs,
+            ino: openlistClient.generateIno(dirPath)
+          }
+          cacheOpenListFileMetadata(dirPath, dirMetadata)
+        }
+
+        return {
+          name: normalized.name,
+          path: relPath,
+          reldirpath: dirname === '.' ? '' : dirname,
+          fullpath: normalized.path,
+          extension: Path.extname(normalized.name),
+          deep: deep,
+          // 保留 OpenList 特有信息
+          size: normalized.size,
+          mtimeMs: normalized.mtimeMs,
+          ctimeMs: normalized.ctimeMs,
+          birthtimeMs: normalized.birthtimeMs,
+          ino: normalized.ino,
+          isOpenList: true
+        }
+      })
+      .sort((a, b) => a.deep - b.deep)
+
+    Logger.debug(`[fileUtils] Cached metadata for ${result.length} OpenList files and ${cachedDirs.size} directories`)
+
+    return result
   } catch (error) {
     Logger.error(`[fileUtils] Failed to recurse OpenList directory "${path}":`, error)
     return []
@@ -738,11 +835,11 @@ module.exports.pathExists = async (path, isOpenList = false) => {
     isOpenList = true
     path = normalizeOpenListPath(path)
   }
-  
+
   if (isOpenList && openlistClient.isEnabled()) {
     return await openlistClient.pathExists(path)
   }
-  
+
   return await fs.pathExists(path)
 }
 
@@ -757,11 +854,11 @@ module.exports.isDirectory = async (path, isOpenList = false) => {
     isOpenList = true
     path = normalizeOpenListPath(path)
   }
-  
+
   if (isOpenList && openlistClient.isEnabled()) {
     return await openlistClient.isDirectory(path)
   }
-  
+
   try {
     const stat = await fs.stat(path)
     return stat.isDirectory()
@@ -781,11 +878,11 @@ module.exports.getFileDownloadUrl = async (path, isOpenList = false) => {
     isOpenList = true
     path = normalizeOpenListPath(path)
   }
-  
+
   if (isOpenList && openlistClient.isEnabled()) {
     const url = await openlistClient.getDownloadUrl(path)
     return url || path
   }
-  
+
   return path
 }

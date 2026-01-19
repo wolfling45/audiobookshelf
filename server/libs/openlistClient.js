@@ -13,6 +13,8 @@ const Logger = require('../Logger')
  * - OPENLIST_CONCURRENCY: 最大并发请求数（默认 2）
  * - OPENLIST_BATCH_SIZE: 音频文件扫描批次大小（默认 2）
  * - OPENLIST_BATCH_DELAY: 批次之间的延迟（毫秒，默认 500）
+ * - OPENLIST_CACHE_EXPIRY: 缓存过期时间（毫秒，默认 300000）
+ * - OPENLIST_USE_SIGNED_URL: 是否使用签名下载链接（默认 false，设为 true 则调用 API 获取签名链接）
  */
 class OpenListClient {
   constructor() {
@@ -28,6 +30,12 @@ class OpenListClient {
     // 请求队列状态
     this.activeRequests = 0
     this.requestQueue = []
+
+    // 文件信息缓存（避免重复 API 调用）
+    // key: 文件路径, value: 文件信息对象
+    this.fileInfoCache = new Map()
+    // 缓存过期时间（毫秒），默认 5 分钟
+    this.cacheExpiry = parseInt(process.env.OPENLIST_CACHE_EXPIRY) || 300000
 
     if (this.enabled) {
       Logger.info(`[OpenList] Client initialized with URL: ${this.baseURL}`)
@@ -248,13 +256,23 @@ class OpenListClient {
   async getFileInfo(path, password = '') {
     if (!this.enabled) return null
 
+    // 先检查缓存
+    const cached = this.getCachedFileInfo(path)
+    if (cached) {
+      Logger.debug(`[OpenList] Using cached file info for: ${path}`)
+      return cached
+    }
+
     try {
-      Logger.debug(`[OpenList] Getting file info: ${path}`)
+      Logger.debug(`[OpenList] Getting file info from API: ${path}`)
 
       const response = await this.requestWithRetry(() => this.client.post('/api/fs/get', { path, password }), `getFileInfo(${path})`)
 
       if (response.data?.code === 200) {
-        return response.data.data
+        const fileInfo = response.data.data
+        // 缓存结果
+        this.cacheFileInfo(path, fileInfo)
+        return fileInfo
       } else {
         Logger.error(`[OpenList] Get file info failed with code ${response.data?.code}: ${response.data?.message}`)
         return null
@@ -263,6 +281,49 @@ class OpenListClient {
       Logger.error(`[OpenList] Failed to get file info "${path}":`, error.message)
       return null
     }
+  }
+
+  /**
+   * 缓存文件信息
+   * @param {string} path - 文件路径
+   * @param {Object} fileInfo - 文件信息对象
+   */
+  cacheFileInfo(path, fileInfo) {
+    this.fileInfoCache.set(path, {
+      data: fileInfo,
+      timestamp: Date.now()
+    })
+  }
+
+  /**
+   * 从缓存获取文件信息
+   * @param {string} path - 文件路径
+   * @returns {Object|null} 文件信息对象，如果缓存不存在或已过期则返回 null
+   */
+  getCachedFileInfo(path) {
+    const cached = this.fileInfoCache.get(path)
+    if (!cached) return null
+
+    // 检查是否过期
+    if (Date.now() - cached.timestamp > this.cacheExpiry) {
+      this.fileInfoCache.delete(path)
+      return null
+    }
+
+    return cached.data
+  }
+
+  /**
+   * 清除文件信息缓存
+   * @param {string} [path] - 可选，指定路径则只清除该路径的缓存，否则清除所有缓存
+   */
+  clearCache(path = null) {
+    if (path) {
+      this.fileInfoCache.delete(path)
+    } else {
+      this.fileInfoCache.clear()
+    }
+    Logger.debug(`[OpenList] Cache cleared${path ? ` for ${path}` : ''}`)
   }
 
   /**
@@ -295,6 +356,9 @@ class OpenListClient {
         const itemPath = path === '/' ? `/${item.name}` : `${path}/${item.name}`
 
         if (item.is_dir) {
+          // 缓存目录信息
+          this.cacheFileInfo(itemPath, { ...item, path: itemPath, is_dir: true })
+
           // 递归处理子目录
           const subItems = await this.listDirectoryRecursive(itemPath, {
             ...options,
@@ -307,6 +371,9 @@ class OpenListClient {
             ...item,
             path: itemPath
           }
+
+          // 缓存文件信息（这样后续 getFileInfo 调用可以直接使用缓存）
+          this.cacheFileInfo(itemPath, fileInfo)
 
           if (filter(fileInfo)) {
             result.push(fileInfo)
@@ -323,16 +390,40 @@ class OpenListClient {
 
   /**
    * 获取文件下载链接
+   * 优先使用缓存的 raw_url，如果没有则构造直接下载链接
    * @param {string} path - 文件路径
    * @param {string} password - 密码（可选）
    * @returns {Promise<string|null>} 下载链接
    */
   async getDownloadUrl(path, password = '') {
-    const fileInfo = await this.getFileInfo(path, password)
-    if (!fileInfo) return null
+    // 首先检查缓存中是否有 raw_url
+    const cached = this.getCachedFileInfo(path)
+    if (cached && cached.raw_url) {
+      Logger.debug(`[OpenList] Using cached raw_url for: ${path}`)
+      return cached.raw_url
+    }
 
-    // OpenList 返回的 raw_url 是直接下载链接
-    return fileInfo.raw_url || fileInfo.url || null
+    // 如果缓存中没有 raw_url，构造直接下载链接
+    // OpenList/AList 的直接下载链接格式: {baseURL}/d{path}
+    // 注意：path 已经以 / 开头
+    const directUrl = `${this.baseURL}/d${path}`
+    Logger.debug(`[OpenList] Constructed direct download URL: ${directUrl}`)
+
+    // 如果需要签名（某些存储后端需要），则需要调用 API
+    // 但为了避免超时，我们先尝试直接链接
+    // 如果直接链接不工作，用户可以配置 OPENLIST_USE_SIGNED_URL=true 来强制使用签名链接
+    if (process.env.OPENLIST_USE_SIGNED_URL === 'true') {
+      try {
+        const fileInfo = await this.getFileInfo(path, password)
+        if (fileInfo && fileInfo.raw_url) {
+          return fileInfo.raw_url
+        }
+      } catch (error) {
+        Logger.warn(`[OpenList] Failed to get signed URL, falling back to direct URL: ${error.message}`)
+      }
+    }
+
+    return directUrl
   }
 
   /**
