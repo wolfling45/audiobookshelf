@@ -125,14 +125,15 @@ module.exports.groupFileItemsIntoLibraryItemDirs = groupFileItemsIntoLibraryItem
  * Get LibraryFile from filepath
  * @param {string} libraryItemPath
  * @param {string[]} files
+ * @param {boolean} [isOpenList]
  * @returns {import('../objects/files/LibraryFile')}
  */
-function buildLibraryFile(libraryItemPath, files) {
+function buildLibraryFile(libraryItemPath, files, isOpenList = false) {
   return Promise.all(
     files.map(async (file) => {
       const filePath = Path.posix.join(libraryItemPath, file)
       const newLibraryFile = new LibraryFile()
-      await newLibraryFile.setDataFromPath(filePath, file)
+      await newLibraryFile.setDataFromPath(filePath, file, isOpenList)
       return newLibraryFile
     })
   )

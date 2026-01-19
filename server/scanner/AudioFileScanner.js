@@ -160,10 +160,12 @@ class AudioFileScanner {
   async scan(mediaType, libraryFile, mediaMetadataFromScan, isOpenList = false) {
     const filePath = libraryFile.metadata.path
     
-    // 检查是否为 OpenList 文件
-    if (fileUtils.isOpenListPath(filePath)) {
+    // 检查是否为 OpenList 文件（通过 libraryFile 的标志或路径前缀）
+    if (libraryFile.isOpenList || fileUtils.isOpenListPath(filePath)) {
       isOpenList = true
     }
+    
+    Logger.debug(`[AudioFileScanner] Scanning file: ${filePath}, isOpenList: ${isOpenList}`)
     
     // 对于 OpenList 文件，需要特殊处理
     let probePath = filePath
@@ -173,6 +175,8 @@ class AudioFileScanner {
       if (downloadUrl && downloadUrl !== filePath) {
         Logger.debug(`[AudioFileScanner] Using OpenList download URL for probe: ${downloadUrl}`)
         probePath = downloadUrl
+      } else {
+        Logger.warn(`[AudioFileScanner] Failed to get download URL for OpenList file: ${filePath}`)
       }
     }
     
@@ -212,10 +216,11 @@ class AudioFileScanner {
   async executeMediaFileScans(mediaType, libraryItemScanData, audioLibraryFiles) {
     const batchSize = 32
     const results = []
+    const isOpenList = libraryItemScanData.isOpenList || false
     for (let batch = 0; batch < audioLibraryFiles.length; batch += batchSize) {
       const proms = []
       for (let i = batch; i < Math.min(batch + batchSize, audioLibraryFiles.length); i++) {
-        proms.push(this.scan(mediaType, audioLibraryFiles[i], libraryItemScanData.mediaMetadata))
+        proms.push(this.scan(mediaType, audioLibraryFiles[i], libraryItemScanData.mediaMetadata, isOpenList))
       }
       results.push(...(await Promise.all(proms).then((scanResults) => scanResults.filter((sr) => sr))))
     }

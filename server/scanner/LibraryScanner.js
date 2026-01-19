@@ -346,11 +346,11 @@ class LibraryScanner {
             path: Path.posix.join(normalizedPath, libraryItemPath),
             relPath: libraryItemPath
           }
-          fileObjs = await scanUtils.buildLibraryFile(normalizedPath, [libraryItemPath])
+          fileObjs = await scanUtils.buildLibraryFile(normalizedPath, [libraryItemPath], true)
           isFile = true
         } else {
           libraryItemData = scanUtils.getDataFromMediaDir(library.mediaType, normalizedPath, libraryItemPath)
-          fileObjs = await scanUtils.buildLibraryFile(libraryItemData.path, libraryItemGrouping[libraryItemPath])
+          fileObjs = await scanUtils.buildLibraryFile(libraryItemData.path, libraryItemGrouping[libraryItemPath], true)
         }
 
         const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path, true)
@@ -378,7 +378,8 @@ class LibraryScanner {
             relPath: libraryItemData.relPath,
             isFile,
             mediaMetadata: libraryItemData.mediaMetadata || null,
-            libraryFiles: fileObjs
+            libraryFiles: fileObjs,
+            isOpenList: true
           })
         )
       }

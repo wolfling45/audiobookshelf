@@ -36,6 +36,8 @@ class LibraryItemScanData {
     this.mediaMetadata = data.mediaMetadata
     /** @type {import('../objects/files/LibraryFile')[]} */
     this.libraryFiles = data.libraryFiles
+    /** @type {boolean} */
+    this.isOpenList = data.isOpenList || false
 
     // Set after check
     /** @type {boolean} */

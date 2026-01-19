@@ -20,6 +20,7 @@ class LibraryFile {
     this.ino = file.ino
     this.metadata = new FileMetadata(file.metadata)
     this.isSupplementary = file.isSupplementary === undefined ? null : file.isSupplementary
+    this.isOpenList = file.isOpenList || false
     this.addedAt = file.addedAt
     this.updatedAt = file.updatedAt
   }
@@ -29,6 +30,7 @@ class LibraryFile {
       ino: this.ino,
       metadata: this.metadata.toJSON(),
       isSupplementary: this.isSupplementary,
+      isOpenList: this.isOpenList || false,
       addedAt: this.addedAt,
       updatedAt: this.updatedAt,
       fileType: this.fileType
@@ -60,16 +62,17 @@ class LibraryFile {
     return this.metadata.ext === '.opf'
   }
 
-  async setDataFromPath(path, relPath) {
-    var fileTsData = await getFileTimestampsWithIno(path)
+  async setDataFromPath(path, relPath, isOpenList = false) {
+    var fileTsData = await getFileTimestampsWithIno(path, isOpenList)
     var fileMetadata = new FileMetadata()
     fileMetadata.setData(fileTsData)
     fileMetadata.filename = Path.basename(relPath)
     fileMetadata.path = filePathToPOSIX(path)
     fileMetadata.relPath = filePathToPOSIX(relPath)
     fileMetadata.ext = Path.extname(relPath)
-    this.ino = fileTsData.ino
+    this.ino = fileTsData ? fileTsData.ino : null
     this.metadata = fileMetadata
+    this.isOpenList = isOpenList  // 保存标志以便后续使用
     this.addedAt = Date.now()
     this.updatedAt = Date.now()
   }
