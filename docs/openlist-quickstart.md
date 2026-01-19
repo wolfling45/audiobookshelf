@@ -31,6 +31,7 @@ docker run -d \
 3. 复制完整的 Token
 
 **重要提示：**
+
 - Token 格式：`openlist-{uuid}{random_string}`
 - 示例：`openlist-604f88cd-0b69-4f2f-82ad-2cad65f7b4edczMXctzT8V3xtNUKxY7xNRtJ2uIE0VHERNYutZFG53L15Pls2ll18UhNj8dzYNd2`
 - 必须复制完整的 Token，包括 `openlist-` 前缀
@@ -45,6 +46,13 @@ export OPENLIST_URL=http://localhost:5244
 export OPENLIST_TOKEN=your-token-here
 export IGNORE_FILE_METADATA=true
 export FAST_SCAN_MODE=true
+
+# 可选：调整并发和超时设置（避免 115 API 速率限制）
+export OPENLIST_TIMEOUT=60000      # 超时时间（毫秒），默认 60000
+export OPENLIST_RETRIES=3          # 重试次数，默认 3
+export OPENLIST_CONCURRENCY=2      # 最大并发请求数，默认 2
+export OPENLIST_BATCH_SIZE=2       # 音频文件扫描批次大小，默认 2
+export OPENLIST_BATCH_DELAY=500    # 批次之间的延迟（毫秒），默认 500
 ```
 
 或在 Docker Compose 中：
@@ -59,6 +67,10 @@ services:
       - OPENLIST_TOKEN=your-token-here
       - IGNORE_FILE_METADATA=true
       - FAST_SCAN_MODE=true
+      # 可选：调整并发设置（115 网盘建议使用较低的并发）
+      - OPENLIST_CONCURRENCY=2
+      - OPENLIST_BATCH_SIZE=2
+      - OPENLIST_BATCH_DELAY=1000
     ports:
       - 13378:80
     volumes:
@@ -66,7 +78,7 @@ services:
       - ./metadata:/metadata
     depends_on:
       - openlist
-  
+
   openlist:
     image: xhofe/alist:latest
     ports:
@@ -74,6 +86,16 @@ services:
     volumes:
       - ./alist-data:/opt/alist/data
 ```
+
+**关于并发设置的说明：**
+
+115 网盘 API 有速率限制，如果并发请求过多会导致超时。建议设置：
+
+- `OPENLIST_CONCURRENCY=2`：最多同时 2 个 API 请求
+- `OPENLIST_BATCH_SIZE=2`：每批扫描 2 个音频文件
+- `OPENLIST_BATCH_DELAY=1000`：批次之间等待 1 秒
+
+如果仍然遇到超时，可以进一步降低这些值（如设为 1）。
 
 ### 第五步：测试连接
 
@@ -110,10 +132,11 @@ node server/utils/testOpenList.js /115
    - 文件夹路径：`/115/Audiobooks`（普通路径，不需要前缀）
 
 2. 然后使用脚本设置为 OpenList 存储：
+
    ```bash
    # 列出所有书库，找到 ID
    node server/utils/setOpenListProvider.js --list
-   
+
    # 设置指定书库为 OpenList 存储
    node server/utils/setOpenListProvider.js <library-id>
    ```
@@ -121,6 +144,7 @@ node server/utils/testOpenList.js /115
 3. 触发扫描，系统会自动使用 OpenList API
 
 **推荐使用方法 2**，因为：
+
 - 路径更简洁，不需要前缀
 - 可以随时切换存储类型
 - 更符合数据库设计
@@ -132,6 +156,7 @@ node server/utils/testOpenList.js /115
 A: 这是路径识别问题。使用以下方法解决：
 
 **推荐方法：设置 provider**
+
 ```bash
 # 1. 列出所有书库
 node server/utils/setOpenListProvider.js --list
@@ -143,7 +168,8 @@ node server/utils/setOpenListProvider.js <library-id>
 ```
 
 **或者修改路径格式：**
-- 将路径从 `/115/audiobook3/儿童故事` 
+
+- 将路径从 `/115/audiobook3/儿童故事`
 - 改为 `openlist:/115/audiobook3/儿童故事`
 
 详见：[故障排查指南](./openlist-troubleshooting.md#问题-1-扫描时提示-root-path-has-no-media-folders)
@@ -151,6 +177,7 @@ node server/utils/setOpenListProvider.js <library-id>
 ### Q: 扫描很慢怎么办？
 
 A: 确保启用了优化选项：
+
 ```bash
 export IGNORE_FILE_METADATA=true
 export FAST_SCAN_MODE=true
@@ -160,6 +187,7 @@ export SKIP_EMBEDDED_CHAPTERS=true
 ### Q: 提示连接失败？
 
 A: 检查：
+
 1. OpenList 是否正常运行：`curl http://localhost:5244/ping`
 2. Token 是否正确：检查 OpenList 管理后台
 3. 网络是否可达：确保 Audiobookshelf 能访问 OpenList
@@ -167,6 +195,7 @@ A: 检查：
 ### Q: 文件扫描不到？
 
 A: 检查：
+
 1. OpenList 中路径是否正确
 2. 文件是否为支持的音频格式（mp3, m4a, m4b, flac 等）
 3. 运行测试脚本查看详细信息：`node server/utils/testOpenList.js /your/path`
@@ -174,6 +203,7 @@ A: 检查：
 ### Q: 如何查看日志？
 
 A: 查找包含 `[OpenList]` 的日志：
+
 ```bash
 # Docker
 docker logs audiobookshelf | grep OpenList
@@ -261,9 +291,11 @@ docker logs -f audiobookshelf | grep -E "OpenList|ERROR"
 ### 认证问题排查
 
 如果遇到 401 错误（"token is invalidated"），请参考：
+
 - [OpenList 认证问题排查指南](./openlist-auth-troubleshooting.md)
 
 快速诊断：
+
 ```bash
 # 运行认证测试脚本，自动测试不同的认证格式
 export OPENLIST_URL=http://localhost:5244

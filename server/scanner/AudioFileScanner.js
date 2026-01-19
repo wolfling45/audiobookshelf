@@ -159,14 +159,14 @@ class AudioFileScanner {
    */
   async scan(mediaType, libraryFile, mediaMetadataFromScan, isOpenList = false) {
     const filePath = libraryFile.metadata.path
-    
+
     // 检查是否为 OpenList 文件（通过 libraryFile 的标志或路径前缀）
     if (libraryFile.isOpenList || fileUtils.isOpenListPath(filePath)) {
       isOpenList = true
     }
-    
+
     Logger.debug(`[AudioFileScanner] Scanning file: ${filePath}, isOpenList: ${isOpenList}`)
-    
+
     // 对于 OpenList 文件，需要特殊处理
     let probePath = filePath
     if (isOpenList && openlistClient.isEnabled()) {
@@ -179,7 +179,7 @@ class AudioFileScanner {
         Logger.warn(`[AudioFileScanner] Failed to get download URL for OpenList file: ${filePath}`)
       }
     }
-    
+
     const probeOptions = scanConfig.getProbeOptions()
     const probeData = await prober.probe(probePath, probeOptions)
 
@@ -214,15 +214,32 @@ class AudioFileScanner {
    * @returns {Promise<AudioFile[]>}
    */
   async executeMediaFileScans(mediaType, libraryItemScanData, audioLibraryFiles) {
-    const batchSize = 32
-    const results = []
     const isOpenList = libraryItemScanData.isOpenList || false
+
+    // OpenList 使用更小的批次大小以避免 API 速率限制
+    // 可通过环境变量 OPENLIST_BATCH_SIZE 配置，默认为 2
+    const batchSize = isOpenList ? parseInt(process.env.OPENLIST_BATCH_SIZE) || 2 : 32
+
+    // OpenList 批次之间添加延迟以避免速率限制
+    // 可通过环境变量 OPENLIST_BATCH_DELAY 配置（毫秒），默认为 500ms
+    const batchDelay = isOpenList ? parseInt(process.env.OPENLIST_BATCH_DELAY) || 500 : 0
+
+    if (isOpenList) {
+      Logger.info(`[AudioFileScanner] Scanning ${audioLibraryFiles.length} OpenList files with batch size ${batchSize}, delay ${batchDelay}ms`)
+    }
+
+    const results = []
     for (let batch = 0; batch < audioLibraryFiles.length; batch += batchSize) {
       const proms = []
       for (let i = batch; i < Math.min(batch + batchSize, audioLibraryFiles.length); i++) {
         proms.push(this.scan(mediaType, audioLibraryFiles[i], libraryItemScanData.mediaMetadata, isOpenList))
       }
       results.push(...(await Promise.all(proms).then((scanResults) => scanResults.filter((sr) => sr))))
+
+      // OpenList 批次之间添加延迟
+      if (isOpenList && batchDelay > 0 && batch + batchSize < audioLibraryFiles.length) {
+        await new Promise((resolve) => setTimeout(resolve, batchDelay))
+      }
     }
 
     return results
