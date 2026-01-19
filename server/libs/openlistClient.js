@@ -14,7 +14,6 @@ const Logger = require('../Logger')
  * - OPENLIST_BATCH_SIZE: 音频文件扫描批次大小（默认 2）
  * - OPENLIST_BATCH_DELAY: 批次之间的延迟（毫秒，默认 500）
  * - OPENLIST_CACHE_EXPIRY: 缓存过期时间（毫秒，默认 300000）
- * - OPENLIST_USE_SIGNED_URL: 是否使用签名下载链接（默认 false，设为 true 则调用 API 获取签名链接）
  */
 class OpenListClient {
   constructor() {
@@ -390,7 +389,7 @@ class OpenListClient {
 
   /**
    * 获取文件下载链接
-   * 优先使用缓存的 raw_url，如果没有则构造直接下载链接
+   * 通过 /api/fs/get API 获取带签名的下载链接
    * @param {string} path - 文件路径
    * @param {string} password - 密码（可选）
    * @returns {Promise<string|null>} 下载链接
@@ -403,27 +402,26 @@ class OpenListClient {
       return cached.raw_url
     }
 
-    // 如果缓存中没有 raw_url，构造直接下载链接
-    // OpenList/AList 的直接下载链接格式: {baseURL}/d{path}
-    // 注意：path 已经以 / 开头
-    const directUrl = `${this.baseURL}/d${path}`
-    Logger.debug(`[OpenList] Constructed direct download URL: ${directUrl}`)
-
-    // 如果需要签名（某些存储后端需要），则需要调用 API
-    // 但为了避免超时，我们先尝试直接链接
-    // 如果直接链接不工作，用户可以配置 OPENLIST_USE_SIGNED_URL=true 来强制使用签名链接
-    if (process.env.OPENLIST_USE_SIGNED_URL === 'true') {
-      try {
-        const fileInfo = await this.getFileInfo(path, password)
-        if (fileInfo && fileInfo.raw_url) {
-          return fileInfo.raw_url
-        }
-      } catch (error) {
-        Logger.warn(`[OpenList] Failed to get signed URL, falling back to direct URL: ${error.message}`)
+    // 需要调用 API 获取签名的下载链接
+    // 115 网盘等存储后端需要签名才能下载
+    try {
+      Logger.debug(`[OpenList] Getting signed download URL for: ${path}`)
+      const fileInfo = await this.getFileInfo(path, password)
+      if (fileInfo && fileInfo.raw_url) {
+        Logger.debug(`[OpenList] Got signed raw_url for: ${path}`)
+        return fileInfo.raw_url
       }
-    }
 
-    return directUrl
+      // 如果 API 没有返回 raw_url，尝试构造直接链接（可能对某些存储后端有效）
+      const directUrl = `${this.baseURL}/d${path}`
+      Logger.warn(`[OpenList] No raw_url from API, using direct URL: ${directUrl}`)
+      return directUrl
+    } catch (error) {
+      Logger.error(`[OpenList] Failed to get download URL for "${path}": ${error.message}`)
+      // 降级到直接链接
+      const directUrl = `${this.baseURL}/d${path}`
+      return directUrl
+    }
   }
 
   /**

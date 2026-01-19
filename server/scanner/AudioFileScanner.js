@@ -155,9 +155,10 @@ class AudioFileScanner {
    * @param {LibraryItem.LibraryFileObject} libraryFile
    * @param {{title:string, subtitle:string, series:string, sequence:string, publishedYear:string, narrators:string}} mediaMetadataFromScan
    * @param {boolean} [isOpenList]
+   * @param {string} [prefetchedDownloadUrl] - 预先获取的下载链接（用于 OpenList）
    * @returns {Promise<AudioFile>}
    */
-  async scan(mediaType, libraryFile, mediaMetadataFromScan, isOpenList = false) {
+  async scan(mediaType, libraryFile, mediaMetadataFromScan, isOpenList = false, prefetchedDownloadUrl = null) {
     const filePath = libraryFile.metadata.path
 
     // 检查是否为 OpenList 文件（通过 libraryFile 的标志或路径前缀）
@@ -170,13 +171,19 @@ class AudioFileScanner {
     // 对于 OpenList 文件，需要特殊处理
     let probePath = filePath
     if (isOpenList && openlistClient.isEnabled()) {
-      // 获取下载链接用于 probe
-      const downloadUrl = await fileUtils.getFileDownloadUrl(filePath, true)
-      if (downloadUrl && downloadUrl !== filePath) {
-        Logger.debug(`[AudioFileScanner] Using OpenList download URL for probe: ${downloadUrl}`)
-        probePath = downloadUrl
+      // 优先使用预获取的下载链接
+      if (prefetchedDownloadUrl) {
+        Logger.debug(`[AudioFileScanner] Using pre-fetched download URL for probe: ${prefetchedDownloadUrl}`)
+        probePath = prefetchedDownloadUrl
       } else {
-        Logger.warn(`[AudioFileScanner] Failed to get download URL for OpenList file: ${filePath}`)
+        // 降级：获取下载链接用于 probe
+        const downloadUrl = await fileUtils.getFileDownloadUrl(filePath, true)
+        if (downloadUrl && downloadUrl !== filePath) {
+          Logger.debug(`[AudioFileScanner] Using OpenList download URL for probe: ${downloadUrl}`)
+          probePath = downloadUrl
+        } else {
+          Logger.warn(`[AudioFileScanner] Failed to get download URL for OpenList file: ${filePath}`)
+        }
       }
     }
 
@@ -207,6 +214,45 @@ class AudioFileScanner {
   }
 
   /**
+   * 预先批量获取 OpenList 文件的下载链接
+   * @param {LibraryItem.LibraryFileObject[]} audioLibraryFiles
+   * @returns {Promise<Map<string, string>>} 路径到下载链接的映射
+   */
+  async prefetchOpenListDownloadUrls(audioLibraryFiles) {
+    const urlMap = new Map()
+    const batchSize = parseInt(process.env.OPENLIST_BATCH_SIZE) || 2
+    const batchDelay = parseInt(process.env.OPENLIST_BATCH_DELAY) || 500
+
+    Logger.info(`[AudioFileScanner] Pre-fetching download URLs for ${audioLibraryFiles.length} OpenList files`)
+
+    for (let batch = 0; batch < audioLibraryFiles.length; batch += batchSize) {
+      const batchFiles = audioLibraryFiles.slice(batch, Math.min(batch + batchSize, audioLibraryFiles.length))
+
+      const proms = batchFiles.map(async (libraryFile) => {
+        const filePath = libraryFile.metadata.path
+        try {
+          const url = await openlistClient.getDownloadUrl(filePath)
+          if (url) {
+            urlMap.set(filePath, url)
+          }
+        } catch (error) {
+          Logger.warn(`[AudioFileScanner] Failed to get download URL for ${filePath}: ${error.message}`)
+        }
+      })
+
+      await Promise.all(proms)
+
+      // 批次之间添加延迟
+      if (batchDelay > 0 && batch + batchSize < audioLibraryFiles.length) {
+        await new Promise((resolve) => setTimeout(resolve, batchDelay))
+      }
+    }
+
+    Logger.info(`[AudioFileScanner] Pre-fetched ${urlMap.size} download URLs`)
+    return urlMap
+  }
+
+  /**
    * Scan LibraryFiles and return AudioFiles
    * @param {string} mediaType
    * @param {import('./LibraryItemScanData')} libraryItemScanData
@@ -224,19 +270,25 @@ class AudioFileScanner {
     // 可通过环境变量 OPENLIST_BATCH_DELAY 配置（毫秒），默认为 500ms
     const batchDelay = isOpenList ? parseInt(process.env.OPENLIST_BATCH_DELAY) || 500 : 0
 
+    // 对于 OpenList，预先获取所有下载链接
+    let downloadUrlMap = null
     if (isOpenList) {
       Logger.info(`[AudioFileScanner] Scanning ${audioLibraryFiles.length} OpenList files with batch size ${batchSize}, delay ${batchDelay}ms`)
+      downloadUrlMap = await this.prefetchOpenListDownloadUrls(audioLibraryFiles)
     }
 
     const results = []
     for (let batch = 0; batch < audioLibraryFiles.length; batch += batchSize) {
       const proms = []
       for (let i = batch; i < Math.min(batch + batchSize, audioLibraryFiles.length); i++) {
-        proms.push(this.scan(mediaType, audioLibraryFiles[i], libraryItemScanData.mediaMetadata, isOpenList))
+        const libraryFile = audioLibraryFiles[i]
+        // 传递预获取的下载链接
+        const downloadUrl = downloadUrlMap ? downloadUrlMap.get(libraryFile.metadata.path) : null
+        proms.push(this.scan(mediaType, libraryFile, libraryItemScanData.mediaMetadata, isOpenList, downloadUrl))
       }
       results.push(...(await Promise.all(proms).then((scanResults) => scanResults.filter((sr) => sr))))
 
-      // OpenList 批次之间添加延迟
+      // OpenList 批次之间添加延迟（probe 阶段）
       if (isOpenList && batchDelay > 0 && batch + batchSize < audioLibraryFiles.length) {
         await new Promise((resolve) => setTimeout(resolve, batchDelay))
       }
