@@ -250,16 +250,22 @@ class OpenListClient {
    * 获取文件/目录信息
    * @param {string} path - 文件或目录路径
    * @param {string} password - 密码（可选）
+   * @param {boolean} [requireRawUrl=false] - 是否需要 raw_url（如果缓存中没有则强制调用 API）
    * @returns {Promise<Object|null>} 文件/目录信息对象
    */
-  async getFileInfo(path, password = '') {
+  async getFileInfo(path, password = '', requireRawUrl = false) {
     if (!this.enabled) return null
 
     // 先检查缓存
     const cached = this.getCachedFileInfo(path)
     if (cached) {
-      Logger.debug(`[OpenList] Using cached file info for: ${path}`)
-      return cached
+      // 如果需要 raw_url 但缓存中没有，则需要调用 API
+      if (requireRawUrl && !cached.raw_url) {
+        Logger.debug(`[OpenList] Cache hit but no raw_url, fetching from API: ${path}`)
+      } else {
+        Logger.debug(`[OpenList] Using cached file info for: ${path}`)
+        return cached
+      }
     }
 
     try {
@@ -269,7 +275,7 @@ class OpenListClient {
 
       if (response.data?.code === 200) {
         const fileInfo = response.data.data
-        // 缓存结果
+        // 缓存结果（包含 raw_url）
         this.cacheFileInfo(path, fileInfo)
         return fileInfo
       } else {
@@ -406,7 +412,8 @@ class OpenListClient {
     // 115 网盘等存储后端需要签名才能下载
     try {
       Logger.debug(`[OpenList] Getting signed download URL for: ${path}`)
-      const fileInfo = await this.getFileInfo(path, password)
+      // 传入 requireRawUrl=true，强制调用 API 获取 raw_url
+      const fileInfo = await this.getFileInfo(path, password, true)
       if (fileInfo && fileInfo.raw_url) {
         Logger.debug(`[OpenList] Got signed raw_url for: ${path}`)
         return fileInfo.raw_url
