@@ -61,6 +61,7 @@ class LibraryFile {
   }
 
   async setDataFromPath(path, relPath) {
+    const scanConfig = require('../../utils/scanConfig')
     var fileTsData = await getFileTimestampsWithIno(path)
     var fileMetadata = new FileMetadata()
     fileMetadata.setData(fileTsData)
@@ -68,7 +69,16 @@ class LibraryFile {
     fileMetadata.path = filePathToPOSIX(path)
     fileMetadata.relPath = filePathToPOSIX(relPath)
     fileMetadata.ext = Path.extname(relPath)
-    this.ino = fileTsData.ino
+
+    // 在忽略元数据模式下，如果 ino 为空，使用路径的哈希值作为替代
+    if (fileTsData.ino) {
+      this.ino = fileTsData.ino
+    } else if (scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      this.ino = `path-${Buffer.from(path).toString('base64').slice(0, 20)}`
+    } else {
+      this.ino = fileTsData.ino // 保持为 null/undefined
+    }
+
     this.metadata = fileMetadata
     this.addedAt = Date.now()
     this.updatedAt = Date.now()

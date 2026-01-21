@@ -340,9 +340,17 @@ class LibraryScanner {
 
       const libraryItemFolderStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path)
 
-      if (!libraryItemFolderStats.ino) {
-        Logger.warn(`[LibraryScanner] Library item folder "${libraryItemData.path}" has no inode value`)
-        continue
+      // 在忽略元数据模式下，如果 ino 为空，使用路径的哈希值作为替代
+      let itemIno = libraryItemFolderStats.ino
+      if (!itemIno) {
+        if (scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+          // 使用路径生成一个稳定的替代 ino 值
+          itemIno = `path-${Buffer.from(libraryItemData.path).toString('base64').slice(0, 20)}`
+          Logger.debug(`[LibraryScanner] Library item folder "${libraryItemData.path}" has no inode value, using path-based identifier: ${itemIno}`)
+        } else {
+          Logger.warn(`[LibraryScanner] Library item folder "${libraryItemData.path}" has no inode value`)
+          continue
+        }
       }
 
       items.push(
@@ -350,7 +358,7 @@ class LibraryScanner {
           libraryFolderId: folder.id,
           libraryId: folder.libraryId,
           mediaType: library.mediaType,
-          ino: libraryItemFolderStats.ino,
+          ino: itemIno,
           mtimeMs: libraryItemFolderStats.mtimeMs || 0,
           ctimeMs: libraryItemFolderStats.ctimeMs || 0,
           birthtimeMs: libraryItemFolderStats.birthtimeMs || 0,
@@ -666,7 +674,7 @@ function isSingleMediaFile(fileUpdateGroup, itemDir) {
 async function findLibraryItemByItemToItemInoMatch(libraryId, fullPath) {
   // 如果忽略元数据，跳过 inode 匹配
   if (scanConfig.IGNORE_FILE_METADATA_CHANGES) return null
-  
+
   const ino = await fileUtils.getIno(fullPath)
   if (!ino) return null
   const existingLibraryItem = await Database.libraryItemModel.findOneExpanded({
@@ -680,7 +688,7 @@ async function findLibraryItemByItemToItemInoMatch(libraryId, fullPath) {
 async function findLibraryItemByItemToFileInoMatch(libraryId, fullPath, isSingleMedia) {
   // 如果忽略元数据，跳过 inode 匹配
   if (!isSingleMedia || scanConfig.IGNORE_FILE_METADATA_CHANGES) return null
-  
+
   // check if it was moved from another folder by comparing the ino to the library files
   const ino = await fileUtils.getIno(fullPath)
   if (!ino) return null
@@ -704,7 +712,7 @@ async function findLibraryItemByItemToFileInoMatch(libraryId, fullPath, isSingle
 async function findLibraryItemByFileToItemInoMatch(libraryId, fullPath, isSingleMedia, itemFiles) {
   // 如果忽略元数据，跳过 inode 匹配
   if (isSingleMedia || scanConfig.IGNORE_FILE_METADATA_CHANGES) return null
-  
+
   // check if it was moved from the root folder by comparing the ino to the ino of the scanned files
   let itemFileInos = []
   for (const itemFile of itemFiles) {

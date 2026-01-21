@@ -143,11 +143,20 @@ class LibraryItemScanner {
     }
 
     const libraryItemStats = await fileUtils.getFileTimestampsWithIno(libraryItemData.path)
+
+    // 在忽略元数据模式下，如果 ino 为空，使用路径的哈希值作为替代
+    const scanConfig = require('../utils/scanConfig')
+    let itemIno = libraryItemStats.ino
+    if (!itemIno && scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+      itemIno = `path-${Buffer.from(libraryItemData.path).toString('base64').slice(0, 20)}`
+      Logger.debug(`[LibraryItemScanner] Library item "${libraryItemData.path}" has no inode value, using path-based identifier: ${itemIno}`)
+    }
+
     return new LibraryItemScanData({
       libraryFolderId: folder.id,
       libraryId: library.id,
       mediaType: library.mediaType,
-      ino: libraryItemStats.ino,
+      ino: itemIno || libraryItemStats.ino,
       mtimeMs: libraryItemStats.mtimeMs || 0,
       ctimeMs: libraryItemStats.ctimeMs || 0,
       birthtimeMs: libraryItemStats.birthtimeMs || 0,

@@ -97,7 +97,7 @@ class BookScanner {
         media.audioFiles = media.audioFiles.map((audioFileObj) => {
           // 优先使用路径匹配
           let matchedScannedAudioFile = scannedAudioFiles.find((saf) => saf.metadata.path === audioFileObj.metadata.path)
-          
+
           // 只有在不忽略元数据时才使用 inode 匹配
           if (!matchedScannedAudioFile && !scanConfig.IGNORE_FILE_METADATA_CHANGES) {
             matchedScannedAudioFile = scannedAudioFiles.find((saf) => saf.ino === audioFileObj.ino)
@@ -128,12 +128,12 @@ class BookScanner {
       for (const audioLibraryFile of libraryItemData.audioLibraryFiles) {
         // 优先使用路径检查
         let isAlreadySet = media.audioFiles.some((af) => af.metadata.path === audioLibraryFile.metadata.path)
-        
+
         // 只有在不忽略元数据时才使用 inode 检查
         if (!isAlreadySet && !scanConfig.IGNORE_FILE_METADATA_CHANGES) {
           isAlreadySet = media.audioFiles.some((af) => af.ino === audioLibraryFile.ino)
         }
-        
+
         if (!isAlreadySet) {
           libraryScan.addLog(LogLevel.DEBUG, `Existing audio library file "${audioLibraryFile.metadata.relPath}" was not set on book "${media.title}" so setting it now`)
           audioLibraryFilesToAdd.push(audioLibraryFile)
@@ -419,7 +419,17 @@ class BookScanner {
     // Check/update the isSupplementary flag on libraryFiles for the LibraryItem
     for (const libraryFile of existingLibraryItem.libraryFiles) {
       if (globals.SupportedEbookTypes.includes(libraryFile.metadata.ext.slice(1).toLowerCase())) {
-        if (media.ebookFile && libraryFile.ino === media.ebookFile.ino) {
+        // 优先使用路径匹配，在忽略元数据模式下不使用 ino 匹配
+        let isMainEbook = false
+        if (media.ebookFile) {
+          if (scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+            isMainEbook = libraryFile.metadata.path === media.ebookFile.metadata.path
+          } else {
+            isMainEbook = libraryFile.ino === media.ebookFile.ino || libraryFile.metadata.path === media.ebookFile.metadata.path
+          }
+        }
+
+        if (isMainEbook) {
           if (libraryFile.isSupplementary !== false) {
             libraryFile.isSupplementary = false
             libraryItemUpdated = true
@@ -535,7 +545,12 @@ class BookScanner {
 
     for (const libraryFile of libraryItemObj.libraryFiles) {
       if (globals.SupportedEbookTypes.includes(libraryFile.metadata.ext.slice(1).toLowerCase())) {
-        libraryFile.isSupplementary = libraryFile.ino !== ebookLibraryFile?.ino
+        // 优先使用路径匹配，在忽略元数据模式下不使用 ino 匹配
+        if (scanConfig.IGNORE_FILE_METADATA_CHANGES) {
+          libraryFile.isSupplementary = libraryFile.metadata.path !== ebookLibraryFile?.metadata?.path
+        } else {
+          libraryFile.isSupplementary = libraryFile.ino !== ebookLibraryFile?.ino
+        }
       }
     }
 
