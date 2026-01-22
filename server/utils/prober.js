@@ -242,9 +242,32 @@ function parseProbeData(data, verbose = false) {
     const sizeBytes = !isNaN(format.size) ? Number(format.size) : null
     const sizeMb = sizeBytes !== null ? Number((sizeBytes / (1024 * 1024)).toFixed(2)) : null
 
+    let duration = !isNaN(format.duration) ? Number(format.duration) : null
+
+    // 验证 duration 的合理性
+    // 如果 duration 超过 360000 秒（100小时），可能是错误的值
+    const MAX_REASONABLE_DURATION = 360000 // 100 hours in seconds
+    if (duration !== null && duration > MAX_REASONABLE_DURATION) {
+      Logger.warn(`[prober] Suspicious duration detected: ${duration} seconds (${(duration / 3600).toFixed(2)} hours). This may be incorrect.`)
+
+      // 尝试从音频流中获取 duration
+      const audioStream = streams?.find((s) => s.codec_type === 'audio')
+      if (audioStream && !isNaN(audioStream.duration) && Number(audioStream.duration) < MAX_REASONABLE_DURATION) {
+        Logger.info(`[prober] Using audio stream duration instead: ${audioStream.duration} seconds`)
+        duration = Number(audioStream.duration)
+      } else if (sizeBytes && format.bit_rate && !isNaN(format.bit_rate)) {
+        // 尝试根据文件大小和比特率估算 duration
+        const estimatedDuration = (sizeBytes * 8) / Number(format.bit_rate)
+        if (estimatedDuration < MAX_REASONABLE_DURATION) {
+          Logger.info(`[prober] Using estimated duration based on file size and bitrate: ${estimatedDuration.toFixed(2)} seconds`)
+          duration = estimatedDuration
+        }
+      }
+    }
+
     let cleanedData = {
       format: format.format_long_name || format.name || 'Unknown',
-      duration: !isNaN(format.duration) ? Number(format.duration) : null,
+      duration,
       size: sizeBytes,
       sizeMb,
       bit_rate: !isNaN(format.bit_rate) ? Number(format.bit_rate) : null,

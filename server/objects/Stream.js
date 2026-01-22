@@ -95,6 +95,14 @@ class Stream extends EventEmitter {
     if (this.totalDuration - numSegs * this.segmentLength > 0) {
       numSegs++
     }
+
+    // 安全检查：如果分段数量异常大，记录警告
+    // 正常情况下，100小时的有声书约需要 60000 个分段
+    const MAX_REASONABLE_SEGMENTS = 100000
+    if (numSegs > MAX_REASONABLE_SEGMENTS) {
+      Logger.warn(`[Stream] Unusually high number of segments: ${numSegs} (duration: ${this.totalDuration}s). This may indicate incorrect duration metadata.`)
+    }
+
     return numSegs
   }
   get clientPlaylistUri() {
