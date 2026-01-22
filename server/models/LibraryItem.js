@@ -614,17 +614,12 @@ class LibraryItem extends Model {
    * @returns {Promise}
    */
   async saveMetadataFile() {
-    let metadataPath = Path.join(global.MetadataPath, 'items', this.id)
-    let storeMetadataWithItem = global.ServerSettings.storeMetadataWithItem
-    if (storeMetadataWithItem && !this.isFile) {
-      metadataPath = this.path
-    } else {
-      // Make sure metadata book dir exists
-      storeMetadataWithItem = false
-      await fsExtra.ensureDir(metadataPath)
-    }
+    // 始终保存到 /metadata/items/ (快速本地存储)
+    const metadataItemsPath = Path.join(global.MetadataPath, 'items', this.id)
+    await fsExtra.ensureDir(metadataItemsPath)
 
-    const metadataFilePath = Path.join(metadataPath, `metadata.${global.ServerSettings.metadataFileFormat}`)
+    const metadataFileName = `metadata.${global.ServerSettings.metadataFileFormat}`
+    const metadataFilePath = Path.join(metadataItemsPath, metadataFileName)
 
     // Expanded with series, authors, podcastEpisodes
     const mediaExpanded = this.media || (await this.getMediaExpanded())
@@ -674,40 +669,54 @@ class LibraryItem extends Model {
       }
     }
 
+    const jsonContent = JSON.stringify(jsonObject, null, 2)
+
     return fsExtra
-      .writeFile(metadataFilePath, JSON.stringify(jsonObject, null, 2))
+      .writeFile(metadataFilePath, jsonContent)
       .then(async () => {
-        // Add metadata.json to libraryFiles array if it is new
-        let metadataLibraryFile = this.libraryFiles.find((lf) => lf.metadata.path === filePathToPOSIX(metadataFilePath))
-        if (storeMetadataWithItem) {
-          if (!metadataLibraryFile) {
-            const newLibraryFile = new LibraryFile()
-            await newLibraryFile.setDataFromPath(metadataFilePath, `metadata.json`)
-            metadataLibraryFile = newLibraryFile.toJSON()
-            this.libraryFiles.push(metadataLibraryFile)
-          } else {
-            const fileTimestamps = await getFileTimestampsWithIno(metadataFilePath)
-            if (fileTimestamps) {
-              metadataLibraryFile.metadata.mtimeMs = fileTimestamps.mtimeMs
-              metadataLibraryFile.metadata.ctimeMs = fileTimestamps.ctimeMs
-              metadataLibraryFile.metadata.size = fileTimestamps.size
-              metadataLibraryFile.ino = fileTimestamps.ino
+        Logger.debug(`[LibraryItem] Saved metadata for "${this.media.title}" to "${metadataFilePath}"`)
+
+        // 同步到媒体文件夹 (网盘备份) - 仅对非单文件项目
+        if (!this.isFile) {
+          const mediaMetadataPath = Path.join(this.path, metadataFileName)
+          try {
+            await fsExtra.writeFile(mediaMetadataPath, jsonContent)
+            Logger.debug(`[LibraryItem] Synced metadata to media folder "${mediaMetadataPath}"`)
+
+            // 更新 libraryFiles 数组
+            let metadataLibraryFile = this.libraryFiles.find((lf) => lf.metadata.path === filePathToPOSIX(mediaMetadataPath))
+            if (!metadataLibraryFile) {
+              const newLibraryFile = new LibraryFile()
+              await newLibraryFile.setDataFromPath(mediaMetadataPath, metadataFileName)
+              metadataLibraryFile = newLibraryFile.toJSON()
+              this.libraryFiles.push(metadataLibraryFile)
+            } else {
+              const fileTimestamps = await getFileTimestampsWithIno(mediaMetadataPath)
+              if (fileTimestamps) {
+                metadataLibraryFile.metadata.mtimeMs = fileTimestamps.mtimeMs
+                metadataLibraryFile.metadata.ctimeMs = fileTimestamps.ctimeMs
+                metadataLibraryFile.metadata.size = fileTimestamps.size
+                metadataLibraryFile.ino = fileTimestamps.ino
+              }
             }
-          }
-          const libraryItemDirTimestamps = await getFileTimestampsWithIno(this.path)
-          if (libraryItemDirTimestamps) {
-            this.mtime = libraryItemDirTimestamps.mtimeMs
-            this.ctime = libraryItemDirTimestamps.ctimeMs
-            let size = 0
-            this.libraryFiles.forEach((lf) => (size += !isNaN(lf.metadata.size) ? Number(lf.metadata.size) : 0))
-            this.size = size
-            await this.save()
+
+            // 更新 libraryItem 的时间戳
+            const libraryItemDirTimestamps = await getFileTimestampsWithIno(this.path)
+            if (libraryItemDirTimestamps) {
+              this.mtime = libraryItemDirTimestamps.mtimeMs
+              this.ctime = libraryItemDirTimestamps.ctimeMs
+              let size = 0
+              this.libraryFiles.forEach((lf) => (size += !isNaN(lf.metadata.size) ? Number(lf.metadata.size) : 0))
+              this.size = size
+              await this.save()
+            }
+          } catch (error) {
+            // 同步失败不影响主流程，只记录警告
+            Logger.warn(`[LibraryItem] Failed to sync metadata to media folder "${mediaMetadataPath}": ${error.message}`)
           }
         }
 
-        Logger.debug(`[LibraryItem] Saved metadata for "${this.media.title}" file to "${metadataFilePath}"`)
-
-        return metadataLibraryFile
+        return null
       })
       .catch((error) => {
         Logger.error(`Failed to save json file at "${metadataFilePath}"`, error)

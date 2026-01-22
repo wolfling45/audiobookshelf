@@ -14,11 +14,45 @@ const CacheManager = require('../managers/CacheManager')
 class CoverManager {
   constructor() {}
 
+  /**
+   * 获取封面存储目录 - 始终返回 /metadata/items/ 目录
+   * @param {string} libraryItemId
+   * @returns {string}
+   */
+  getCoverDirectoryById(libraryItemId) {
+    return Path.posix.join(global.MetadataPath, 'items', libraryItemId)
+  }
+
+  /**
+   * 获取封面存储目录 (兼容旧代码)
+   * @deprecated 使用 getCoverDirectoryById 代替
+   */
   getCoverDirectory(libraryItem) {
-    if (global.ServerSettings.storeCoverWithItem && !libraryItem.isFile) {
-      return libraryItem.path
-    } else {
-      return Path.posix.join(Path.posix.join(global.MetadataPath, 'items'), libraryItem.id)
+    // 始终返回 /metadata/items/ 目录
+    return Path.posix.join(global.MetadataPath, 'items', libraryItem.id)
+  }
+
+  /**
+   * 同步封面到媒体文件夹
+   * @param {string} coverPath - 源封面路径
+   * @param {string} libraryItemPath - 媒体文件夹路径
+   * @param {string} coverFilename - 封面文件名
+   * @returns {Promise<boolean>}
+   */
+  async syncCoverToMediaFolder(coverPath, libraryItemPath, coverFilename) {
+    if (!libraryItemPath) return false
+
+    const mediaCoverPath = Path.posix.join(libraryItemPath, coverFilename)
+    try {
+      await fs.copy(coverPath, mediaCoverPath, { overwrite: true })
+      Logger.debug(`[CoverManager] Synced cover to media folder "${mediaCoverPath}"`)
+      // 清理媒体文件夹中的旧封面
+      const extname = Path.extname(coverFilename)
+      await this.removeOldCovers(libraryItemPath, extname)
+      return true
+    } catch (error) {
+      Logger.warn(`[CoverManager] Failed to sync cover to media folder "${mediaCoverPath}": ${error.message}`)
+      return false
     }
   }
 
@@ -93,10 +127,12 @@ class CoverManager {
       }
     }
 
-    const coverDirPath = this.getCoverDirectory(libraryItem)
+    // 始终保存到 /metadata/items/
+    const coverDirPath = this.getCoverDirectoryById(libraryItem.id)
     await fs.ensureDir(coverDirPath)
 
-    const coverFullPath = Path.posix.join(coverDirPath, `cover${extname}`)
+    const coverFilename = `cover${extname}`
+    const coverFullPath = Path.posix.join(coverDirPath, coverFilename)
 
     // Move cover from temp upload dir to destination
     const success = await coverFile
@@ -115,6 +151,11 @@ class CoverManager {
 
     await this.removeOldCovers(coverDirPath, extname)
     await CacheManager.purgeCoverCache(libraryItem.id)
+
+    // 同步到媒体文件夹 (网盘备份)
+    if (!libraryItem.isFile) {
+      await this.syncCoverToMediaFolder(coverFullPath, libraryItem.path, coverFilename)
+    }
 
     Logger.info(`[CoverManager] Uploaded libraryItem cover "${coverFullPath}" for "${libraryItem.media.title}"`)
 
@@ -169,7 +210,8 @@ class CoverManager {
       return imgtype
     }
 
-    var coverDirPath = this.getCoverDirectory(libraryItem)
+    // 始终保存到 /metadata/items/
+    var coverDirPath = this.getCoverDirectoryById(libraryItem.id)
 
     // Cover path is not in correct directory - make a copy
     if (!coverPath.startsWith(coverDirPath)) {
@@ -193,6 +235,12 @@ class CoverManager {
       }
       await this.removeOldCovers(coverDirPath, '.' + imgtype.ext)
       Logger.debug(`[CoverManager] cover copy success`)
+
+      // 同步到媒体文件夹 (网盘备份)
+      if (!libraryItem.isFile) {
+        await this.syncCoverToMediaFolder(newCoverPath, libraryItem.path, coverFilename)
+      }
+
       coverPath = newCoverPath
     }
 
@@ -216,12 +264,8 @@ class CoverManager {
     let audioFileWithCover = audioFiles.find((af) => af.embeddedCoverArt)
     if (!audioFileWithCover) return null
 
-    let coverDirPath = null
-    if (global.ServerSettings.storeCoverWithItem && libraryItemPath) {
-      coverDirPath = libraryItemPath
-    } else {
-      coverDirPath = Path.posix.join(global.MetadataPath, 'items', libraryItemId)
-    }
+    // 始终保存到 /metadata/items/
+    const coverDirPath = this.getCoverDirectoryById(libraryItemId)
     await fs.ensureDir(coverDirPath)
 
     const coverFilename = audioFileWithCover.embeddedCoverArt === 'png' ? 'cover.png' : 'cover.jpg'
@@ -236,6 +280,12 @@ class CoverManager {
     const success = await extractCoverArt(audioFileWithCover.metadata.path, coverFilePath)
     if (success) {
       await CacheManager.purgeCoverCache(libraryItemId)
+
+      // 同步到媒体文件夹 (网盘备份)
+      if (libraryItemPath) {
+        await this.syncCoverToMediaFolder(coverFilePath, libraryItemPath, coverFilename)
+      }
+
       return coverFilePath
     }
     return null
@@ -252,12 +302,8 @@ class CoverManager {
   async saveEbookCoverArt(ebookFileScanData, libraryItemId, libraryItemPath) {
     if (!ebookFileScanData?.ebookCoverPath) return null
 
-    let coverDirPath = null
-    if (global.ServerSettings.storeCoverWithItem && libraryItemPath) {
-      coverDirPath = libraryItemPath
-    } else {
-      coverDirPath = Path.posix.join(global.MetadataPath, 'items', libraryItemId)
-    }
+    // 始终保存到 /metadata/items/
+    const coverDirPath = this.getCoverDirectoryById(libraryItemId)
     await fs.ensureDir(coverDirPath)
 
     let extname = Path.extname(ebookFileScanData.ebookCoverPath) || '.jpg'
@@ -274,6 +320,12 @@ class CoverManager {
     const success = await parseEbookMetadata.extractCoverImage(ebookFileScanData, coverFilePath)
     if (success) {
       await CacheManager.purgeCoverCache(libraryItemId)
+
+      // 同步到媒体文件夹 (网盘备份)
+      if (libraryItemPath) {
+        await this.syncCoverToMediaFolder(coverFilePath, libraryItemPath, coverFilename)
+      }
+
       return coverFilePath
     }
     return null
@@ -289,13 +341,8 @@ class CoverManager {
    */
   async downloadCoverFromUrlNew(url, libraryItemId, libraryItemPath, forceLibraryItemFolder = false) {
     try {
-      let coverDirPath = null
-      if ((global.ServerSettings.storeCoverWithItem || forceLibraryItemFolder) && libraryItemPath) {
-        coverDirPath = libraryItemPath
-      } else {
-        coverDirPath = Path.posix.join(global.MetadataPath, 'items', libraryItemId)
-      }
-
+      // 始终保存到 /metadata/items/
+      const coverDirPath = this.getCoverDirectoryById(libraryItemId)
       await fs.ensureDir(coverDirPath)
 
       const temppath = Path.posix.join(coverDirPath, 'cover')
@@ -316,11 +363,17 @@ class CoverManager {
         return imgtype
       }
 
-      const coverFullPath = Path.posix.join(coverDirPath, `cover.${imgtype.ext}`)
+      const coverFilename = `cover.${imgtype.ext}`
+      const coverFullPath = Path.posix.join(coverDirPath, coverFilename)
       await fs.rename(temppath, coverFullPath)
 
       await this.removeOldCovers(coverDirPath, '.' + imgtype.ext)
       await CacheManager.purgeCoverCache(libraryItemId)
+
+      // 同步到媒体文件夹 (网盘备份)
+      if (libraryItemPath) {
+        await this.syncCoverToMediaFolder(coverFullPath, libraryItemPath, coverFilename)
+      }
 
       Logger.info(`[CoverManager] Downloaded libraryItem cover "${coverFullPath}" from url "${url}"`)
       return {
