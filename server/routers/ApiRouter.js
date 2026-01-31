@@ -35,6 +35,7 @@ const MiscController = require('../controllers/MiscController')
 const ShareController = require('../controllers/ShareController')
 const StatsController = require('../controllers/StatsController')
 const ApiKeyController = require('../controllers/ApiKeyController')
+const SyncController = require('../controllers/SyncController')
 
 class ApiRouter {
   constructor(Server) {
@@ -334,6 +335,13 @@ class ApiRouter {
     this.router.post('/api-keys', ApiKeyController.middleware.bind(this), ApiKeyController.create.bind(this))
     this.router.patch('/api-keys/:id', ApiKeyController.middleware.bind(this), ApiKeyController.update.bind(this))
     this.router.delete('/api-keys/:id', ApiKeyController.middleware.bind(this), ApiKeyController.delete.bind(this))
+
+    //
+    // Sync Routes (Admin only) - 用于本地服务器和VPS之间的媒体库数据同步
+    //
+    this.router.get('/sync/export', SyncController.exportLibraryData.bind(this))
+    this.router.post('/sync/import', SyncController.importLibraryData.bind(this))
+    this.router.get('/sync/status', SyncController.getSyncStatus.bind(this))
 
     //
     // Misc Routes
