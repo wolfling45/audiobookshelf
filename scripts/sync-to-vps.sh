@@ -1,104 +1,120 @@
 #!/bin/bash
 # ============================================================
-# ABS 媒体库同步脚本
-# 用于将本地服务器的媒体库数据同步到 VPS
+# ABS 媒体库同步脚本（SQLite 直接同步方案）
+# 本地扫描服务器 → VPS 播放服务器
+#
+# 同步内容：数据库（保留VPS用户数据）+ metadata目录
 # ============================================================
 
-# 配置变量 - 请根据实际情况修改
-LOCAL_ABS_URL="http://localhost:13378"      # 本地 ABS 服务器地址
-VPS_ABS_URL="http://your-vps-ip:13378"      # VPS ABS 服务器地址
-LOCAL_API_KEY="your-local-api-key"           # 本地服务器 API Key
-VPS_API_KEY="your-vps-api-key"              # VPS 服务器 API Key
-
-# 本地 metadata/items 目录路径
-LOCAL_METADATA_ITEMS="/path/to/local/metadata/items"
-# VPS metadata/items 目录路径 (通过 SSH)
+# ===== 配置 =====
 VPS_USER="root"
 VPS_HOST="your-vps-ip"
-VPS_METADATA_ITEMS="/path/to/vps/metadata/items"
+VPS_KEY="/path/to/your/private_key"                               # SSH 私钥路径
+VPS_CONTAINER="audiobookshelf"                                    # VPS 上的容器名
+VPS_DB_PATH="/home/audiobookshelf_w/config/absdatabase.sqlite"    # VPS 宿主机数据库路径
+LOCAL_DB_PATH="/path/to/local/config/absdatabase.sqlite"          # 本地宿主机数据库路径
+LOCAL_METADATA="/path/to/local/metadata"                          # 本地 metadata 目录
+VPS_METADATA="/home/audiobookshelf_w/metadata"                    # VPS metadata 目录
 
-# 临时文件
-EXPORT_FILE="/tmp/abs_export_$(date +%Y%m%d_%H%M%S).json"
+# 需要在 VPS 上保留的用户数据表
+USER_TABLES="users sessions apiKeys devices mediaProgresses playbackSessions collections collectionBooks playlists playlistMediaItems feeds feedEpisodes mediaItemShares"
 
+# SSH/rsync 通用参数
+SSH_OPTS="-i ${VPS_KEY} -o StrictHostKeyChecking=no"
+SSH="ssh ${SSH_OPTS} ${VPS_USER}@${VPS_HOST}"
+RSYNC_SSH="ssh ${SSH_OPTS}"
+
+# ===== 颜色 =====
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}========================================${NC}"
-echo -e "${GREEN}ABS 媒体库同步开始${NC}"
+echo -e "${GREEN}ABS 媒体库同步开始（SQLite方案）${NC}"
 echo -e "${GREEN}========================================${NC}"
 echo ""
 
-# 步骤 1: 从本地服务器导出数据（流式下载到文件）
-echo -e "${YELLOW}[1/4] 从本地服务器导出媒体库数据...${NC}"
-curl -s -X GET "${LOCAL_ABS_URL}/api/sync/export" \
-  -H "Authorization: Bearer ${LOCAL_API_KEY}" \
-  -o "${EXPORT_FILE}"
-
-if [ $? -ne 0 ] || [ ! -s "${EXPORT_FILE}" ]; then
-  echo -e "${RED}错误: 导出失败${NC}"
+# ===== 步骤 1: 停止 VPS 容器 =====
+echo -e "${YELLOW}[1/6] 停止 VPS 容器...${NC}"
+${SSH} "docker stop ${VPS_CONTAINER}"
+if [ $? -ne 0 ]; then
+  echo -e "${RED}错误: 无法停止 VPS 容器${NC}"
   exit 1
 fi
+echo -e "${GREEN}VPS 容器已停止${NC}"
+echo ""
 
-# 检查是否是错误响应
-FIRST_CHARS=$(head -c 20 "${EXPORT_FILE}")
-if echo "${FIRST_CHARS}" | grep -q '"error"'; then
-  echo -e "${RED}错误: 导出返回错误${NC}"
-  cat "${EXPORT_FILE}"
+# ===== 步骤 2: 备份 VPS 用户数据 =====
+echo -e "${YELLOW}[2/6] 备份 VPS 用户数据...${NC}"
+BACKUP_SQL="/tmp/abs_user_backup.sql"
+
+DUMP_CMD=""
+for TABLE in ${USER_TABLES}; do
+  DUMP_CMD="${DUMP_CMD}.dump ${TABLE}\n"
+done
+
+${SSH} "echo -e '${DUMP_CMD}' | sqlite3 '${VPS_DB_PATH}' > '${BACKUP_SQL}' 2>/dev/null"
+if [ $? -ne 0 ]; then
+  echo -e "${YELLOW}警告: 部分表可能不存在（首次同步时正常）${NC}"
+fi
+echo -e "${GREEN}用户数据已备份${NC}"
+echo ""
+
+# ===== 步骤 3: 同步数据库文件 =====
+echo -e "${YELLOW}[3/6] 同步数据库文件到 VPS...${NC}"
+rsync -avz -e "${RSYNC_SSH}" "${LOCAL_DB_PATH}" "${VPS_USER}@${VPS_HOST}:${VPS_DB_PATH}"
+if [ $? -ne 0 ]; then
+  echo -e "${RED}错误: 数据库同步失败${NC}"
+  ${SSH} "docker start ${VPS_CONTAINER}"
   exit 1
 fi
-
-FILE_SIZE=$(stat -c%s "${EXPORT_FILE}" 2>/dev/null || stat -f%z "${EXPORT_FILE}" 2>/dev/null)
-echo -e "${GREEN}导出成功，文件大小: $((FILE_SIZE / 1024 / 1024))MB${NC}"
+echo -e "${GREEN}数据库同步完成${NC}"
 echo ""
 
-# 步骤 2: 导入数据到 VPS（分表导入避免 body 过大）
-echo -e "${YELLOW}[2/4] 导入数据到 VPS...${NC}"
-IMPORT_RESULT=$(curl -s -X POST "${VPS_ABS_URL}/api/sync/import" \
-  -H "Authorization: Bearer ${VPS_API_KEY}" \
-  -H "Content-Type: application/json" \
-  --data-binary @"${EXPORT_FILE}" \
-  --max-time 300)
+# ===== 步骤 4: 恢复 VPS 用户数据 =====
+echo -e "${YELLOW}[4/6] 恢复 VPS 用户数据...${NC}"
 
-if echo "${IMPORT_RESULT}" | grep -q '"success":true'; then
-  echo -e "${GREEN}数据导入成功${NC}"
-  echo "${IMPORT_RESULT}"
+DELETE_CMD=""
+for TABLE in ${USER_TABLES}; do
+  DELETE_CMD="${DELETE_CMD}DELETE FROM ${TABLE};\n"
+done
+
+${SSH} "echo -e '${DELETE_CMD}' | sqlite3 '${VPS_DB_PATH}' 2>/dev/null"
+${SSH} "sqlite3 '${VPS_DB_PATH}' < '${BACKUP_SQL}' 2>/dev/null"
+
+if [ $? -ne 0 ]; then
+  echo -e "${YELLOW}警告: 用户数据恢复可能部分失败，请检查${NC}"
 else
-  echo -e "${RED}错误: 导入失败${NC}"
-  echo "${IMPORT_RESULT}"
-  echo ""
-  echo -e "${YELLOW}提示: 如果是 body 过大导致失败，请使用 sqlite 直接同步方式（见下方）${NC}"
+  echo -e "${GREEN}用户数据恢复完成${NC}"
 fi
 echo ""
 
-# 步骤 3: 同步 metadata/items 目录
-echo -e "${YELLOW}[3/4] 同步 metadata/items 目录到 VPS...${NC}"
-if [ -d "${LOCAL_METADATA_ITEMS}" ]; then
-  rsync -avz --delete \
-    "${LOCAL_METADATA_ITEMS}/" \
-    "${VPS_USER}@${VPS_HOST}:${VPS_METADATA_ITEMS}/"
-
-  if [ $? -eq 0 ]; then
-    echo -e "${GREEN}metadata/items 同步成功${NC}"
-  else
-    echo -e "${YELLOW}警告: metadata/items 同步失败，但数据库已同步${NC}"
-  fi
+# ===== 步骤 5: 同步 metadata 目录 =====
+echo -e "${YELLOW}[5/6] 同步 metadata 目录...${NC}"
+rsync -avz --delete --exclude='backups/' \
+  -e "${RSYNC_SSH}" \
+  "${LOCAL_METADATA}/" "${VPS_USER}@${VPS_HOST}:${VPS_METADATA}/"
+if [ $? -eq 0 ]; then
+  echo -e "${GREEN}metadata 同步完成${NC}"
 else
-  echo -e "${YELLOW}警告: 本地 metadata/items 目录不存在，跳过同步${NC}"
+  echo -e "${YELLOW}警告: metadata 同步可能部分失败${NC}"
 fi
 echo ""
 
-# 步骤 4: 验证同步状态
-echo -e "${YELLOW}[4/4] 验证 VPS 同步状态...${NC}"
-curl -s -X GET "${VPS_ABS_URL}/api/sync/status" \
-  -H "Authorization: Bearer ${VPS_API_KEY}"
+# ===== 步骤 6: 启动 VPS 容器 =====
+echo -e "${YELLOW}[6/6] 启动 VPS 容器...${NC}"
+${SSH} "docker start ${VPS_CONTAINER}"
+if [ $? -ne 0 ]; then
+  echo -e "${RED}错误: 无法启动 VPS 容器${NC}"
+  exit 1
+fi
+echo -e "${GREEN}VPS 容器已启动${NC}"
 echo ""
 
-# 清理临时文件
-rm -f "${EXPORT_FILE}"
+# ===== 清理 =====
+${SSH} "rm -f '${BACKUP_SQL}'"
 
-echo ""
 echo -e "${GREEN}========================================${NC}"
 echo -e "${GREEN}同步完成!${NC}"
 echo -e "${GREEN}========================================${NC}"
