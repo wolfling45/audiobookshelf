@@ -340,7 +340,7 @@ class ApiRouter {
     // Sync Routes (Admin only) - 用于本地服务器和VPS之间的媒体库数据同步
     //
     this.router.get('/sync/export', SyncController.exportLibraryData.bind(this))
-    this.router.post('/sync/import', SyncController.importLibraryData.bind(this))
+    this.router.post('/sync/import', express.json({ limit: '500mb' }), SyncController.importLibraryData.bind(this))
     this.router.get('/sync/status', SyncController.getSyncStatus.bind(this))
 
     //
