@@ -12,24 +12,6 @@ class SyncController {
   constructor() {}
 
   /**
-   * 流式写入一个表的数据到 response
-   * @param {import('express').Response} res
-   * @param {string} table
-   */
-  async _streamTable(res, table) {
-    const [rows] = await Database.sequelize.query(`SELECT * FROM ${table}`)
-    res.write(`"${table}":`)
-    // 分批写入避免单次 JSON.stringify 过大
-    res.write('[')
-    for (let i = 0; i < rows.length; i++) {
-      if (i > 0) res.write(',')
-      res.write(JSON.stringify(rows[i]))
-    }
-    res.write(']')
-    return rows.length
-  }
-
-  /**
    * 导出媒体库数据（流式）
    * GET /api/sync/export
    *
@@ -48,7 +30,14 @@ class SyncController {
       const counts = {}
       for (let i = 0; i < tables.length; i++) {
         if (i > 0) res.write(',')
-        counts[tables[i]] = await this._streamTable(res, tables[i])
+        const [rows] = await Database.sequelize.query(`SELECT * FROM ${tables[i]}`)
+        res.write(`"${tables[i]}":[`)
+        for (let j = 0; j < rows.length; j++) {
+          if (j > 0) res.write(',')
+          res.write(JSON.stringify(rows[j]))
+        }
+        res.write(']')
+        counts[tables[i]] = rows.length
       }
 
       res.write('},"counts":' + JSON.stringify(counts) + '}')
@@ -68,8 +57,6 @@ class SyncController {
   /**
    * 导入媒体库数据
    * POST /api/sync/import
-   *
-   * 只导入媒体库相关数据，保留用户数据（用户、进度、播放列表等）
    *
    * @param {import('express').Request} req
    * @param {import('express').Response} res
@@ -102,7 +89,6 @@ class SyncController {
       const transaction = await Database.sequelize.transaction()
 
       try {
-        // 1. 导入媒体库配置
         if (data.libraries?.length) {
           for (const library of data.libraries) {
             const [, created] = await Database.libraryModel.upsert(library, { transaction })
@@ -110,7 +96,6 @@ class SyncController {
           }
         }
 
-        // 2. 导入媒体库文件夹
         if (data.libraryFolders?.length) {
           for (const folder of data.libraryFolders) {
             const [, created] = await Database.libraryFolderModel.upsert(folder, { transaction })
@@ -118,7 +103,6 @@ class SyncController {
           }
         }
 
-        // 3. 导入作者
         if (data.authors?.length) {
           for (const author of data.authors) {
             const [, created] = await Database.authorModel.upsert(author, { transaction })
@@ -126,7 +110,6 @@ class SyncController {
           }
         }
 
-        // 4. 导入系列
         if (data.series?.length) {
           for (const s of data.series) {
             const [, created] = await Database.seriesModel.upsert(s, { transaction })
@@ -134,7 +117,6 @@ class SyncController {
           }
         }
 
-        // 5. 导入书籍
         if (data.books?.length) {
           for (const book of data.books) {
             const [, created] = await Database.bookModel.upsert(book, { transaction })
@@ -142,7 +124,6 @@ class SyncController {
           }
         }
 
-        // 6. 导入播客
         if (data.podcasts?.length) {
           for (const podcast of data.podcasts) {
             const [, created] = await Database.podcastModel.upsert(podcast, { transaction })
@@ -150,7 +131,6 @@ class SyncController {
           }
         }
 
-        // 7. 导入播客剧集
         if (data.podcastEpisodes?.length) {
           for (const episode of data.podcastEpisodes) {
             const [, created] = await Database.podcastEpisodeModel.upsert(episode, { transaction })
@@ -158,7 +138,6 @@ class SyncController {
           }
         }
 
-        // 8. 导入媒体项目
         if (data.libraryItems?.length) {
           for (const item of data.libraryItems) {
             const [, created] = await Database.libraryItemModel.upsert(item, { transaction })
@@ -166,7 +145,6 @@ class SyncController {
           }
         }
 
-        // 9. 导入书籍-作者关联
         if (data.bookAuthors?.length) {
           await Database.bookAuthorModel.destroy({ where: {}, transaction })
           for (const ba of data.bookAuthors) {
@@ -175,7 +153,6 @@ class SyncController {
           }
         }
 
-        // 10. 导入书籍-系列关联
         if (data.bookSeries?.length) {
           await Database.bookSeriesModel.destroy({ where: {}, transaction })
           for (const bs of data.bookSeries) {
