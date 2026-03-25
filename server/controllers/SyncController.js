@@ -22,6 +22,21 @@ class SyncController {
     try {
       Logger.info('[SyncController] Starting library data export...')
 
+      // 检查模型是否可用
+      const modelCheck = {
+        libraryModel: !!Database.libraryModel,
+        libraryFolderModel: !!Database.libraryFolderModel,
+        libraryItemModel: !!Database.libraryItemModel,
+        bookModel: !!Database.bookModel,
+        podcastModel: !!Database.podcastModel,
+        podcastEpisodeModel: !!Database.podcastEpisodeModel,
+        authorModel: !!Database.authorModel,
+        seriesModel: !!Database.seriesModel,
+        bookAuthorModel: !!Database.bookAuthorModel,
+        bookSeriesModel: !!Database.bookSeriesModel
+      }
+      Logger.info('[SyncController] Model availability:', JSON.stringify(modelCheck))
+
       // 导出媒体库配置
       const libraries = await Database.libraryModel.findAll({ raw: true })
       const libraryFolders = await Database.libraryFolderModel.findAll({ raw: true })
