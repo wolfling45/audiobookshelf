@@ -22,38 +22,22 @@ class SyncController {
     try {
       Logger.info('[SyncController] Starting library data export...')
 
-      // 检查模型是否可用
-      const modelCheck = {
-        libraryModel: !!Database.libraryModel,
-        libraryFolderModel: !!Database.libraryFolderModel,
-        libraryItemModel: !!Database.libraryItemModel,
-        bookModel: !!Database.bookModel,
-        podcastModel: !!Database.podcastModel,
-        podcastEpisodeModel: !!Database.podcastEpisodeModel,
-        authorModel: !!Database.authorModel,
-        seriesModel: !!Database.seriesModel,
-        bookAuthorModel: !!Database.bookAuthorModel,
-        bookSeriesModel: !!Database.bookSeriesModel
+      // 使用原始 SQL 查询绕过 Sequelize hooks（LibraryItem 的 afterFind hook 不兼容 raw 查询）
+      const queryRaw = async (table) => {
+        const [rows] = await Database.sequelize.query(`SELECT * FROM ${table}`)
+        return rows
       }
-      Logger.info('[SyncController] Model availability:', JSON.stringify(modelCheck))
 
-      // 导出媒体库配置
-      const libraries = await Database.libraryModel.findAll({ raw: true })
-      const libraryFolders = await Database.libraryFolderModel.findAll({ raw: true })
-
-      // 导出媒体项目
-      const libraryItems = await Database.libraryItemModel.findAll({ raw: true })
-      const books = await Database.bookModel.findAll({ raw: true })
-      const podcasts = await Database.podcastModel.findAll({ raw: true })
-      const podcastEpisodes = await Database.podcastEpisodeModel.findAll({ raw: true })
-
-      // 导出作者和系列
-      const authors = await Database.authorModel.findAll({ raw: true })
-      const series = await Database.seriesModel.findAll({ raw: true })
-
-      // 导出关联表
-      const bookAuthors = await Database.bookAuthorModel.findAll({ raw: true })
-      const bookSeries = await Database.bookSeriesModel.findAll({ raw: true })
+      const libraries = await queryRaw('libraries')
+      const libraryFolders = await queryRaw('libraryFolders')
+      const libraryItems = await queryRaw('libraryItems')
+      const books = await queryRaw('books')
+      const podcasts = await queryRaw('podcasts')
+      const podcastEpisodes = await queryRaw('podcastEpisodes')
+      const authors = await queryRaw('authors')
+      const series = await queryRaw('series')
+      const bookAuthors = await queryRaw('bookAuthors')
+      const bookSeries = await queryRaw('bookSeries')
 
       const exportData = {
         version: '1.0',
